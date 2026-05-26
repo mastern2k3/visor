@@ -1,0 +1,454 @@
+package x11
+
+import (
+	"image"
+	"image/color"
+	"log/slog"
+	"math"
+	"math/rand"
+	"time"
+
+	"github.com/BurntSushi/freetype-go/freetype/truetype"
+	"github.com/jezek/xgb/xproto"
+	"github.com/jezek/xgbutil"
+	"github.com/jezek/xgbutil/ewmh"
+	"github.com/jezek/xgbutil/xevent"
+	"github.com/jezek/xgbutil/xgraphics"
+	"github.com/jezek/xgbutil/xwindow"
+
+	"github.com/nitzanz/visor/internal/ipc"
+	"github.com/nitzanz/visor/internal/paths"
+)
+
+// Window dimensions and visibility regions.
+//
+// Instead of resizing the window between "narrow tongue" and "wide panel",
+// the window is *always* expandedW wide. We anchor its right edge well
+// past the screen edge so only the leftmost tongueW pixels are visible.
+// Hover = slide leftward; collapse = slide back. Width never changes,
+// so the rendered image (bg + cwd text) stays intact across states.
+//
+// Layout of the rendered image (window-relative X):
+//
+//   0 .. tongueW        : pure bg color — this is what shows as the "tongue"
+//   tongueW .. textPad  : padding gap between tongue and text
+//   textPad .. expandedW: cwd text
+const (
+	tongueW   = 10  // visible width when collapsed
+	tongueH   = 36  // taller — easier to hover/click, more vertical breathing room
+	expandedW = 300 // wider panel for legible titles
+	textPad   = 18  // window-x where text starts
+	fontPt    = 13.5
+)
+
+// Wobble animation for "working" tongues. We oscillate leftward (never
+// rightward — that would push the window past the screen edge) with cosine
+// easing. Each tongue gets a randomized phase so they breathe independently.
+const (
+	wobbleAmp    = 4.0
+	wobblePeriod = 0.9 // seconds for one full cycle
+)
+
+type tongueOpts struct {
+	x, y     int    // absolute X / Y on the root (current position)
+	rightX   int    // x coordinate of the screen edge (mon.x + mon.w)
+	color    uint32 // 0xRRGGBB
+	expanded bool
+}
+
+// tongue is one X11 window representing one Claude session.
+type tongue struct {
+	X    *xgbutil.XUtil
+	win  *xwindow.Window
+	opt  tongueOpts
+	sess sessionView
+
+	font *truetype.Font // shared with the dock; may be nil if loadFont failed
+
+	wobblePhase float64
+	wobbleStart time.Time
+
+	// xgraphics image used as the window's background pixmap when expanded.
+	// We retain it so we can free the X pixmap explicitly on collapse.
+	expandedImg *xgraphics.Image
+
+	// overflow is set when the rendered label is wider than the panel can show.
+	// When true, hovering the tongue also spawns a tooltip window with the
+	// full text. Recomputed on every render.
+	overflow bool
+
+	// Tooltip resources — non-nil only while shown.
+	tooltipWin *xwindow.Window
+	tooltipImg *xgraphics.Image
+
+	// clickFn, when non-nil, replaces the default IPC click dispatch.
+	// Used by the synthetic help tongue to toggle the help window instead.
+	clickFn func(button byte)
+}
+
+// update repositions and recolors the tongue if anything changed.
+// Reusing the same X window across updates is much cheaper than
+// destroy+create, and avoids brief visual flicker. The rendered image
+// is regenerated only when color or text changed.
+func (t *tongue) update(s sessionView, y int, color uint32) {
+	prevSess := t.sess
+	prevColor := t.opt.color
+	t.sess = s
+	if y != t.opt.y {
+		t.opt.y = y
+		t.win.Move(t.x(), y)
+	}
+	if color != t.opt.color {
+		t.opt.color = color
+	}
+	if color != prevColor || displayLabel(s) != displayLabel(prevSess) {
+		t.render()
+	}
+}
+
+// x returns the X coordinate of the right-anchored tongue.
+func (t *tongue) x() int {
+	// Cached on the window — we don't refetch screen geometry every update.
+	return t.opt.x
+}
+
+// tick is called by the dock's animation loop. Working tongues wobble
+// leftward; everything else snaps back to rest if it was previously moved.
+func (t *tongue) tick(now time.Time) {
+	if t.opt.expanded {
+		return // hover takes priority; nothing to animate
+	}
+	rest := t.opt.rightX - tongueW
+	if t.sess.Activity != "working" {
+		if t.opt.x != rest {
+			t.opt.x = rest
+			t.win.Move(rest, t.opt.y)
+		}
+		return
+	}
+	// Cosine eases naturally — zero velocity at the endpoints, max speed
+	// in the middle. (1 - cos)/2 maps to [0, 1] so the offset stays leftward.
+	elapsed := now.Sub(t.wobbleStart).Seconds()
+	t01 := (1 - math.Cos(elapsed*2*math.Pi/wobblePeriod+t.wobblePhase)) / 2
+	offset := -int(math.Round(wobbleAmp * t01))
+	newX := rest + offset
+	if newX != t.opt.x {
+		t.opt.x = newX
+		t.win.Move(newX, t.opt.y)
+	}
+}
+
+func newTongue(X *xgbutil.XUtil, mon monitor, opt tongueOpts) (*tongue, error) {
+	win, err := xwindow.Generate(X)
+	if err != nil {
+		return nil, err
+	}
+
+	opt.rightX = mon.x + mon.w
+	opt.x = opt.rightX - tongueW
+	bgPixel := opt.color & 0x00_ff_ff_ff // 24-bit colour (no alpha on default visual)
+
+	// The window is always expandedW wide; only its X position changes
+	// between states. The off-screen-right portion is clipped by X.
+	if err := win.CreateChecked(
+		X.RootWin(),
+		opt.x, opt.y, expandedW, tongueH,
+		xproto.CwBackPixel|xproto.CwOverrideRedirect|xproto.CwEventMask,
+		bgPixel,
+		1, // override-redirect = true
+		uint32(xproto.EventMaskButtonPress|
+			xproto.EventMaskEnterWindow|
+			xproto.EventMaskLeaveWindow|
+			xproto.EventMaskExposure),
+	); err != nil {
+		return nil, err
+	}
+
+	// EWMH hints so cooperative WMs still treat it sensibly (dock-type,
+	// always-on-top, sticky across workspaces). Override-redirect bypasses
+	// most of these, but they're cheap and improve behaviour under WMs
+	// that respect them anyway.
+	if err := ewmh.WmWindowTypeSet(X, win.Id, []string{"_NET_WM_WINDOW_TYPE_DOCK"}); err != nil {
+		win.Destroy()
+		return nil, err
+	}
+	if err := ewmh.WmStateSet(X, win.Id, []string{
+		"_NET_WM_STATE_ABOVE",
+		"_NET_WM_STATE_STICKY",
+		"_NET_WM_STATE_SKIP_TASKBAR",
+		"_NET_WM_STATE_SKIP_PAGER",
+	}); err != nil {
+		win.Destroy()
+		return nil, err
+	}
+	if err := ewmh.WmNameSet(X, win.Id, "visor-tongue"); err != nil {
+		win.Destroy()
+		return nil, err
+	}
+
+	t := &tongue{
+		X:           X,
+		win:         win,
+		opt:         opt,
+		wobblePhase: rand.Float64() * 2 * math.Pi,
+		wobbleStart: time.Now(),
+	}
+
+	xevent.ButtonPressFun(t.onButton).Connect(X, win.Id)
+	xevent.EnterNotifyFun(t.onEnter).Connect(X, win.Id)
+	xevent.LeaveNotifyFun(t.onLeave).Connect(X, win.Id)
+
+	win.Map()
+	// First render happens once the font is wired in by the dock (it's
+	// assigned right after newTongue returns). The dock calls render()
+	// explicitly for the initial draw.
+	return t, nil
+}
+
+func (t *tongue) destroy() {
+	t.hideTooltip()
+	if t.expandedImg != nil {
+		t.expandedImg.Destroy()
+		t.expandedImg = nil
+	}
+	if t.win != nil {
+		t.win.Destroy()
+		t.win = nil
+	}
+}
+
+// Button codes (xproto.ButtonMask is a mask; the field on the event is byte).
+const (
+	btnLeft   = 1
+	btnMiddle = 2
+	btnRight  = 3
+)
+
+func (t *tongue) onButton(X *xgbutil.XUtil, ev xevent.ButtonPressEvent) {
+	if t.clickFn != nil {
+		t.clickFn(byte(ev.Detail))
+		return
+	}
+	cmd := ""
+	switch ev.Detail {
+	case btnLeft:
+		cmd = "jump"
+	case btnRight:
+		cmd = "dismiss"
+	case btnMiddle:
+		cmd = "ack"
+	}
+	if cmd == "" || t.sess.ID == "" {
+		return
+	}
+	// Fire-and-forget. We don't want to block the X event loop on socket I/O,
+	// so dispatch in a goroutine.
+	go func(c, id string) {
+		_, err := ipc.Call(paths.Socket(), ipc.Request{Cmd: c, ID: id})
+		if err != nil {
+			slog.Warn("ipc", "cmd", c, "err", err)
+		}
+	}(cmd, t.sess.ID)
+}
+
+func (t *tongue) onEnter(X *xgbutil.XUtil, ev xevent.EnterNotifyEvent) {
+	t.setExpanded(true)
+}
+
+func (t *tongue) onLeave(X *xgbutil.XUtil, ev xevent.LeaveNotifyEvent) {
+	// Ignore Leave events caused by entering a child / re-entering inferior.
+	// Without this, the panel collapses spuriously when the cursor crosses
+	// internal sub-region boundaries (relevant once we add child widgets).
+	if ev.Detail == xproto.NotifyDetailInferior {
+		return
+	}
+	t.setExpanded(false)
+}
+
+// setExpanded slides the window between its collapsed and expanded
+// positions. Width is constant (expandedW); only X changes. The wobble
+// animation also reads this state — wobble is suppressed when expanded.
+func (t *tongue) setExpanded(expand bool) {
+	if t.opt.expanded == expand {
+		return
+	}
+	t.opt.expanded = expand
+	var newX int
+	if expand {
+		newX = t.opt.rightX - expandedW
+	} else {
+		newX = t.opt.rightX - tongueW
+	}
+	t.opt.x = newX
+	t.win.Move(newX, t.opt.y)
+
+	if expand && t.overflow {
+		t.showTooltip()
+	} else {
+		t.hideTooltip()
+	}
+}
+
+// Tooltip layout constants.
+const (
+	tipPadX   = 10
+	tipPadY   = 5
+	tipGapY   = 4 // gap between tooltip and expanded panel
+	tipBg     = 0x14_18_22
+	tipBorder = 0x33_38_45
+)
+
+// showTooltip pops up a small floating window above the expanded panel
+// containing the full label. We render once per show; on collapse it's
+// destroyed (cheaper than maintaining a hidden window).
+func (t *tongue) showTooltip() {
+	if t.font == nil || t.tooltipWin != nil {
+		return
+	}
+	text := displayLabel(t.sess)
+	textW, textH := xgraphics.Extents(t.font, fontPt, text)
+	w := textW + 2*tipPadX
+	h := textH + 2*tipPadY
+
+	// Anchor: right edge aligned with the screen's right edge, so the tooltip
+	// reads naturally toward the panel. Sit above the panel; if that would
+	// go off-screen, sit below instead.
+	x := t.opt.rightX - w - 2
+	y := t.opt.y - h - tipGapY
+	// Fall back below if it would clip the top of the monitor.
+	// (We don't know the screen origin here; assume y >= 0 means OK.)
+	if y < 0 {
+		y = t.opt.y + tongueH + tipGapY
+	}
+
+	win, err := xwindow.Generate(t.X)
+	if err != nil {
+		return
+	}
+	if err := win.CreateChecked(
+		t.X.RootWin(),
+		x, y, w, h,
+		xproto.CwBackPixel|xproto.CwOverrideRedirect|xproto.CwEventMask,
+		uint32(tipBg),
+		1,
+		uint32(xproto.EventMaskExposure),
+	); err != nil {
+		return
+	}
+	ewmh.WmWindowTypeSet(t.X, win.Id, []string{"_NET_WM_WINDOW_TYPE_TOOLTIP"})
+	ewmh.WmStateSet(t.X, win.Id, []string{
+		"_NET_WM_STATE_ABOVE",
+		"_NET_WM_STATE_STICKY",
+		"_NET_WM_STATE_SKIP_TASKBAR",
+		"_NET_WM_STATE_SKIP_PAGER",
+	})
+
+	im := xgraphics.New(t.X, image.Rect(0, 0, w, h))
+	bg := rgba(tipBg)
+	for yy := 0; yy < h; yy++ {
+		for xx := 0; xx < w; xx++ {
+			im.Set(xx, yy, bg)
+		}
+	}
+	// 1-px subtle border via overlapping rectangles of border colour.
+	border := rgba(tipBorder)
+	for xx := 0; xx < w; xx++ {
+		im.Set(xx, 0, border)
+		im.Set(xx, h-1, border)
+	}
+	for yy := 0; yy < h; yy++ {
+		im.Set(0, yy, border)
+		im.Set(w-1, yy, border)
+	}
+	_, _, _ = im.Text(tipPadX, tipPadY, color.RGBA{0xe5, 0xe9, 0xf0, 0xff}, fontPt, t.font, text)
+	im.CreatePixmap()
+	im.XDraw()
+	im.XSurfaceSet(win.Id)
+	win.Map()
+
+	t.tooltipWin = win
+	t.tooltipImg = im
+}
+
+func (t *tongue) hideTooltip() {
+	if t.tooltipImg != nil {
+		t.tooltipImg.Destroy()
+		t.tooltipImg = nil
+	}
+	if t.tooltipWin != nil {
+		t.tooltipWin.Destroy()
+		t.tooltipWin = nil
+	}
+}
+
+// render generates the full expanded panel (bg color + cwd text) and
+// installs it as the window's background pixmap. Called once after
+// font assignment and whenever color or text changes.
+func (t *tongue) render() {
+	if t.expandedImg != nil {
+		t.expandedImg.Destroy()
+		t.expandedImg = nil
+	}
+
+	im := xgraphics.New(t.X, image.Rect(0, 0, expandedW, tongueH))
+	bg := rgba(t.opt.color)
+	for y := 0; y < tongueH; y++ {
+		for x := 0; x < expandedW; x++ {
+			im.Set(x, y, bg)
+		}
+	}
+
+	if t.font != nil {
+		fg := contrastFG(bg)
+		text := displayLabel(t.sess)
+		// textPad gives the leftmost tongueW pixels a clean uninterrupted
+		// strip of bg colour — that's the "tongue" the user sees when collapsed.
+		// y baseline picked so the cap height sits roughly centred in tongueH.
+		_, _, _ = im.Text(textPad, 9, fg, fontPt, t.font, text)
+		// Detect overflow now so we know whether to surface a tooltip on hover.
+		textW, _ := xgraphics.Extents(t.font, fontPt, text)
+		t.overflow = textW > (expandedW - textPad - 8)
+	}
+
+	im.CreatePixmap()
+	im.XDraw()
+	im.XSurfaceSet(t.win.Id)
+	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, expandedW, tongueH)
+	t.expandedImg = im
+}
+
+// displayLabel picks what to show inside the expanded tongue.
+// Prefer Claude's ai-title (a real session name); fall back to cwd then id.
+func displayLabel(s sessionView) string {
+	if s.Title != "" {
+		return s.Title
+	}
+	if s.DisplayCWD != "" {
+		return s.DisplayCWD
+	}
+	if len(s.ID) >= 8 {
+		return s.ID[:8]
+	}
+	return s.ID
+}
+
+// rgba converts a packed 0xRRGGBB to a color.RGBA (opaque).
+func rgba(c uint32) color.RGBA {
+	return color.RGBA{
+		R: uint8((c >> 16) & 0xff),
+		G: uint8((c >> 8) & 0xff),
+		B: uint8(c & 0xff),
+		A: 0xff,
+	}
+}
+
+// contrastFG returns a foreground colour that reads well against bg.
+// Cheap luminance check; anything bright gets near-black text, anything
+// dark gets near-white. Saves us from defining per-state fg colours.
+func contrastFG(bg color.RGBA) color.RGBA {
+	lum := (int(bg.R)*299 + int(bg.G)*587 + int(bg.B)*114) / 1000
+	if lum > 140 {
+		return color.RGBA{0x10, 0x14, 0x1c, 0xff}
+	}
+	return color.RGBA{0xe5, 0xe9, 0xf0, 0xff}
+}

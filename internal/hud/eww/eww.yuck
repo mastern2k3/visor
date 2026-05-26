@@ -1,0 +1,83 @@
+;; Visor HUD — Claude Code attention dock.
+;;
+;; A vertical strip of "tongues" anchored to the right edge of the screen.
+;; Each tongue is one Claude session: narrow by default, hover to expand
+;; leftward and reveal full details (cwd, id, jump/dismiss actions).
+;; Color = session state.
+;;
+;; Run:   eww -c ~/.config/eww/visor open visor
+;; Close: eww -c ~/.config/eww/visor close visor
+;; Reload after edits: eww -c ~/.config/eww/visor reload
+
+;; Push-driven: the daemon emits a fresh snapshot only when HUD-observable
+;; state changes (attention, activity, waiting, session set). This avoids
+;; the re-render-on-every-poll churn that destroys hover/tooltip state.
+(deflisten sessions :initial "[]" "visor ctl watch")
+
+;; ----------------------------------------------------------------------
+;; One tongue per session.
+;;
+;; The narrow visible bar is always rendered; the wider details panel is
+;; inside a (revealer) that opens whenever the session needs attention,
+;; and CSS expands on :hover for ack/dismissed sessions too.
+;; ----------------------------------------------------------------------
+
+;; Per-session row: narrow tongue on the right, hover expands a panel
+;; leftward. Container has alpha-0 background so GTK's X11 input shape
+;; makes empty space click-through; only the opaque tongue/panel block.
+(defwidget tongue [s]
+  (eventbox :class {"visor-tongue visor-attn-${s.attention} visor-act-${s.activity} visor-wait-${s.waiting}"}
+            :tooltip {s.display_cwd != "" ? s.display_cwd : s.id}
+    (box :orientation "h"
+         :space-evenly false
+         :halign "end"
+      (revealer :transition "slideleft"
+                :duration "150ms"
+                :reveal {s.attention == "needs"}
+        (box :class "visor-panel"
+             :orientation "h"
+             :space-evenly false
+             :spacing 8
+          (label :class "visor-cwd"
+                 :text {s.display_cwd != "" ? s.display_cwd : s.id}
+                 :limit-width 50
+                 :xalign 1)
+          (button :class "visor-btn visor-jump"
+                  :tooltip "jump to session"
+                  :onclick "visor ctl jump ${s.id} &" "→")
+          (button :class "visor-btn visor-dismiss"
+                  :tooltip "dismiss until next state change"
+                  :onclick "visor ctl dismiss ${s.id} &" "✕")))
+      (box :class "visor-bar" :width 8 :height 28))))
+
+;; ----------------------------------------------------------------------
+;; Dock window: right-anchored vertical strip.
+;; Width budget accommodates the expanded panel; the empty left area is
+;; transparent so other windows show through.
+;; ----------------------------------------------------------------------
+
+(defwidget visor_dock []
+  (box :class "visor-dock"
+       :orientation "v"
+       :space-evenly false
+       :spacing 6
+       :valign "center"
+       :halign "end"
+    (for s in {sessions}
+      (tongue :s s))))
+
+;; Wide window with transparent (alpha-0) container regions. GTK on X11
+;; auto-applies the X11 Shape extension from the alpha channel: alpha-0
+;; pixels become click-through; opaque pixels (the tongues / panels)
+;; block clicks. :wm-ignore must stay false for this to work.
+(defwindow visor
+  :monitor 0
+  :geometry (geometry :x "0px"
+                      :y "0px"
+                      :anchor "center right"
+                      :width "520px"
+                      :height "80%")
+  :stacking "fg"
+  :focusable false
+  :wm-ignore false
+  (visor_dock))
