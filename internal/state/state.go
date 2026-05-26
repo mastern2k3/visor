@@ -67,7 +67,10 @@ type Session struct {
 	WindowID       string    `json:"window_id,omitempty"` // WM-specific locator
 	WM             string    `json:"wm,omitempty"`        // "niri" | "sway" | "hypr" | "x11" | "tmux"
 	TmuxPane       string    `json:"tmux_pane,omitempty"`
-	Title          string    `json:"title,omitempty"`
+
+	// Title sources (both come from the JSONL; customTitle wins when set).
+	AiTitle     string `json:"ai_title,omitempty"`
+	CustomTitle string `json:"custom_title,omitempty"`
 
 	Activity  transcript.SessionActivity `json:"-"`
 	Waiting   Waiting                    `json:"-"`
@@ -102,6 +105,16 @@ type Snapshot struct {
 	LastUpdate     time.Time `json:"last_update"`
 }
 
+// resolvedTitle is what the HUD should display. Custom (user-set) beats
+// AI-generated; either beats falling through to cwd in the dock's display
+// logic.
+func (s *Session) resolvedTitle() string {
+	if s.CustomTitle != "" {
+		return s.CustomTitle
+	}
+	return s.AiTitle
+}
+
 func waitingString(w Waiting) string {
 	switch w {
 	case WaitingUser:
@@ -114,28 +127,96 @@ func waitingString(w Waiting) string {
 
 // Store is the concurrent session registry.
 type Store struct {
-	mu       sync.RWMutex
-	sessions map[string]*Session // keyed by session ID (UUID)
-	byPath   map[string]string   // transcript path → session ID
-	subs     *Subscribers
+	mu        sync.RWMutex
+	sessions  map[string]*Session // keyed by session ID (UUID)
+	byPath    map[string]string   // transcript path → session ID
+	dismissed map[string]bool     // persisted across restarts; keyed by real UUID
+	subs      *Subscribers
 }
 
 func NewStore() *Store {
-	return &Store{
-		sessions: map[string]*Session{},
-		byPath:   map[string]string{},
-		subs:     NewSubscribers(),
+	persistedSess, dismissed, err := LoadPersisted()
+	if err != nil {
+		// Non-fatal — bad persisted state shouldn't block startup.
+		dismissed = map[string]bool{}
+		persistedSess = nil
 	}
+	s := &Store{
+		sessions:  map[string]*Session{},
+		byPath:    map[string]string{},
+		dismissed: dismissed,
+		subs:      NewSubscribers(),
+	}
+	// Hydrate sessions from disk. Activity/Waiting/Attention are intentionally
+	// not restored — they're derived state that gets recomputed by the tailer
+	// (and re-armed by future hook events). Dismiss is restored via the
+	// dismissed set.
+	for _, p := range persistedSess {
+		sess := &Session{
+			ID:             p.ID,
+			TranscriptPath: p.TranscriptPath,
+			CWD:            p.CWD,
+			PID:            p.PID,
+			WM:             p.WM,
+			WindowID:       p.WindowID,
+			TmuxPane:       p.TmuxPane,
+			FirstSeen:      p.FirstSeen,
+		}
+		if sess.FirstSeen.IsZero() {
+			sess.FirstSeen = time.Now()
+		}
+		if s.dismissed[sess.ID] {
+			sess.Attention = AttentionDismiss
+		}
+		s.sessions[sess.ID] = sess
+		if sess.TranscriptPath != "" {
+			s.byPath[sess.TranscriptPath] = sess.ID
+		}
+	}
+	return s
+}
+
+// snapshotPersist builds the on-disk representation under the lock,
+// returning the slice and dismissed map so I/O happens without holding it.
+func (s *Store) snapshotPersist() []persistedSession {
+	out := make([]persistedSession, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		// Skip sessions still keyed by transcript path (no real UUID yet).
+		// We can't reliably restore them on next boot — they'd need to be
+		// re-discovered from the JSONL anyway. The path-keyed entry will
+		// adopt its real UUID once the tailer reads a few lines.
+		if sess.ID == sess.TranscriptPath {
+			continue
+		}
+		out = append(out, persistedSession{
+			ID:             sess.ID,
+			TranscriptPath: sess.TranscriptPath,
+			CWD:            sess.CWD,
+			PID:            sess.PID,
+			WM:             sess.WM,
+			WindowID:       sess.WindowID,
+			TmuxPane:       sess.TmuxPane,
+			FirstSeen:      sess.FirstSeen,
+			Dismissed:      sess.Attention == AttentionDismiss,
+		})
+	}
+	return out
 }
 
 // Subscribers exposes the pub/sub registry so the IPC layer can attach.
 func (s *Store) Subscribers() *Subscribers { return s.subs }
 
-// notify computes a fresh snapshot and broadcasts to subscribers.
-// The Subscribers layer dedupes by HUD-relevant digest, so this is safe
-// to call from any mutation path.
+// notify computes a fresh snapshot and broadcasts to subscribers, then
+// persists the durable parts of state. The Subscribers layer dedupes by
+// HUD-relevant digest, so HUD broadcasts are cheap; disk writes are tiny
+// (a few KB JSON) and happen on every mutation. If this becomes hot we
+// can add a debounce later.
 func (s *Store) notify() {
 	s.subs.Broadcast(s.Snapshot())
+	s.mu.RLock()
+	ps := s.snapshotPersist()
+	s.mu.RUnlock()
+	_ = savePersisted(ps)
 }
 
 // UpsertByPath finds-or-creates a session keyed by transcript path. Session ID
@@ -167,6 +248,10 @@ func (s *Store) adoptID(sess *Session, realID string) {
 	sess.ID = realID
 	s.sessions[realID] = sess
 	s.byPath[sess.TranscriptPath] = realID
+	// Re-apply persisted dismiss now that the real ID is known.
+	if s.dismissed[realID] {
+		sess.Attention = AttentionDismiss
+	}
 }
 
 // ApplyTranscript folds parsed transcript lines into the session, returning
@@ -191,10 +276,18 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 		if ln.CWD != "" && sess.CWD == "" {
 			sess.CWD = ln.CWD
 		}
-		// ai-title records arrive repeatedly through the session; the latest
-		// one wins. Treat any non-empty value as an update.
-		if ln.Type == "ai-title" && ln.AiTitle != "" {
-			sess.Title = ln.AiTitle
+		// Title records arrive repeatedly through the session; latest non-empty
+		// wins. customTitle (user-set, e.g. `/branch <name>`) takes precedence
+		// over aiTitle (Claude-generated) at display time.
+		switch ln.Type {
+		case "ai-title":
+			if ln.AiTitle != "" {
+				sess.AiTitle = ln.AiTitle
+			}
+		case "custom-title":
+			if ln.CustomTitle != "" {
+				sess.CustomTitle = ln.CustomTitle
+			}
 		}
 	}
 	prev := sess.Activity
@@ -217,14 +310,19 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 			}
 		} else if sess.Activity == transcript.ActivityWorking {
 			sess.Waiting = WaitingNone
-			// Working means the user has engaged — clear all attention state.
-			sess.Attention = AttentionAck
+			// Working clears a pending "needs" alert (the user has engaged)
+			// but preserves an explicit Dismiss — that's a manual user
+			// override that should survive activity cycles and restarts.
+			if sess.Attention == AttentionNeeds {
+				sess.Attention = AttentionAck
+			}
 		}
 	}
 	return changed
 }
 
 // Dismiss silences a session until the next activity transition.
+// The dismiss is persisted (via notify → savePersisted) so it survives restarts.
 func (s *Store) Dismiss(id string) bool {
 	s.mu.Lock()
 	sess, ok := s.sessions[id]
@@ -233,6 +331,7 @@ func (s *Store) Dismiss(id string) bool {
 		return false
 	}
 	sess.Attention = AttentionDismiss
+	s.dismissed[sess.ID] = true
 	s.mu.Unlock()
 	s.notify()
 	return true
@@ -247,6 +346,7 @@ func (s *Store) Acknowledge(id string) bool {
 		return false
 	}
 	sess.Attention = AttentionAck
+	delete(s.dismissed, sess.ID)
 	s.mu.Unlock()
 	s.notify()
 	return true
@@ -276,7 +376,7 @@ func (s *Store) Snapshot() []Snapshot {
 			WM:             sess.WM,
 			WindowID:       sess.WindowID,
 			TmuxPane:       sess.TmuxPane,
-			Title:          sess.Title,
+			Title:          sess.resolvedTitle(),
 			Activity:       sess.Activity.String(),
 			Waiting:        waitingString(sess.Waiting),
 			Attention:      sess.Attention.String(),
@@ -285,7 +385,7 @@ func (s *Store) Snapshot() []Snapshot {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
-		pi, pj := attentionRank(out[i].Attention), attentionRank(out[j].Attention)
+		pi, pj := dockRank(out[i]), dockRank(out[j])
 		if pi != pj {
 			return pi < pj
 		}
@@ -294,17 +394,24 @@ func (s *Store) Snapshot() []Snapshot {
 	return out
 }
 
-// attentionRank: smaller = higher in the dock (more urgent first).
-func attentionRank(a string) int {
-	switch a {
+// dockRank: smaller = higher in the dock. Sessions are tiered so the eye
+// can sweep top-to-bottom in order of "how much should I care right now":
+//
+//	0  needs      — waiting for you (idle or permission)
+//	1  working    — busy, doesn't need you but worth watching
+//	2  idle       — waiting but not nagging (you already engaged)
+//	3  dismissed  — silenced until next state change
+func dockRank(s Snapshot) int {
+	switch s.Attention {
 	case "needs":
 		return 0
-	case "ack":
-		return 1
 	case "dismissed":
-		return 2
+		return 3
 	}
-	return 3
+	if s.Activity == "working" {
+		return 1
+	}
+	return 2
 }
 
 // MarshalSnapshot returns the snapshot as indented JSON for ctl/HUD consumption.

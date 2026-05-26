@@ -49,6 +49,13 @@ const (
 	wobblePeriod = 0.9 // seconds for one full cycle
 )
 
+// alertProtrusion: when a session is attention=needs it sticks out this
+// many px past the collapsed rest position. Picked > wobbleAmp so a needs
+// tongue is unambiguously further left than any working tongue at its
+// wobble peak. The user can spot "you need to do something here" by
+// shape alone, not just color.
+const alertProtrusion = 8
+
 type tongueOpts struct {
 	x, y     int    // absolute X / Y on the root (current position)
 	rightX   int    // x coordinate of the screen edge (mon.x + mon.w)
@@ -112,13 +119,24 @@ func (t *tongue) x() int {
 	return t.opt.x
 }
 
+// restX returns the collapsed resting position for the tongue. Sessions
+// needing attention sit further left so they're visible at a glance even
+// without inspecting color.
+func (t *tongue) restX() int {
+	base := t.opt.rightX - tongueW
+	if t.sess.Attention == "needs" {
+		return base - alertProtrusion
+	}
+	return base
+}
+
 // tick is called by the dock's animation loop. Working tongues wobble
 // leftward; everything else snaps back to rest if it was previously moved.
 func (t *tongue) tick(now time.Time) {
 	if t.opt.expanded {
 		return // hover takes priority; nothing to animate
 	}
-	rest := t.opt.rightX - tongueW
+	rest := t.restX()
 	if t.sess.Activity != "working" {
 		if t.opt.x != rest {
 			t.opt.x = rest
@@ -277,7 +295,7 @@ func (t *tongue) setExpanded(expand bool) {
 	if expand {
 		newX = t.opt.rightX - expandedW
 	} else {
-		newX = t.opt.rightX - tongueW
+		newX = t.restX()
 	}
 	t.opt.x = newX
 	t.win.Move(newX, t.opt.y)

@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/nitzanz/visor/internal/discovery"
+	"github.com/nitzanz/visor/internal/focus"
 	"github.com/nitzanz/visor/internal/hookpayload"
 	"github.com/nitzanz/visor/internal/ipc"
 	"github.com/nitzanz/visor/internal/paths"
@@ -100,13 +101,24 @@ func makeHandler(store *state.Store, log *slog.Logger) ipc.Handler {
 			}
 			return ipc.Response{OK: true}
 		case "jump":
-			// Stub: focus-dispatcher (task 8) will use sess.WM + sess.WindowID /
-			// sess.TmuxPane to actually warp focus. For now we just ack so the
-			// HUD button doesn't spew errors.
-			if _, ok := store.Get(req.ID); !ok {
+			sess, ok := store.Get(req.ID)
+			if !ok {
 				return ipc.Response{Error: "no such session"}
 			}
-			log.Info("jump (stub)", "id", req.ID)
+			// Dispatch in a goroutine so a slow X conn doesn't block the IPC reply.
+			go func() {
+				t := focus.Target{
+					WM:       sess.WM,
+					WindowID: sess.WindowID,
+					TmuxPane: sess.TmuxPane,
+					PID:      sess.PID,
+				}
+				if err := focus.Dispatch(t); err != nil {
+					log.Warn("jump", "id", req.ID, "err", err)
+				} else {
+					log.Info("jump", "id", req.ID, "window_id", sess.WindowID, "tmux_pane", sess.TmuxPane)
+				}
+			}()
 			return ipc.Response{OK: true}
 		case "hook":
 			return handleHook(store, log, req)

@@ -38,9 +38,12 @@ func isMetadata(typ string) bool {
 //   - last is assistant, stop_reason="tool_use"     → Working
 //   - last is assistant, stop_reason="end_turn"     → WaitingUser
 //   - last is user, content[0].type=="tool_result"  → Working (model processing)
-//   - last is user, otherwise                       → WaitingUser (shouldn't normally
-//     be the trailing state, but means user just submitted and assistant hasn't
-//     written yet; treat as Working would be wrong — leave WaitingUser briefly)
+//   - last is user (real prompt), otherwise         → Unknown (don't classify)
+//     A real user prompt as the latest line means Claude is processing it —
+//     but the transcript alone can't tell us whether Claude has started
+//     writing yet. Returning Unknown leaves the hook-driven activity intact
+//     (UserPromptSubmit already set Working); we'd otherwise flip to Waiting
+//     for a second until the assistant's first tool_use lands.
 //   - sidechain lines ignored (subagent forks)
 func Classify(lines []Line) SessionActivity {
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -74,7 +77,10 @@ func Classify(lines []Line) SessionActivity {
 					return ActivityWorking
 				}
 			}
-			return ActivityWaitingUser
+			// Real user prompt as the latest line — can't infer state from
+			// transcript alone. Hooks (UserPromptSubmit / Stop) authoritatively
+			// drive the working↔waiting transition; we defer to them.
+			return ActivityUnknown
 		}
 	}
 	return ActivityUnknown

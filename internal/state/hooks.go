@@ -35,6 +35,14 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 		sess = s.sessions[p.SessionID]
 	}
 	if sess == nil {
+		// Refuse to create a session with no identity. Without either a
+		// session ID or transcript path, the HUD has nothing to label or
+		// dispatch IPC against — it would render as a blank, undismissable
+		// tongue. Drop the event silently; the next hook with real data
+		// will land normally.
+		if p.SessionID == "" && p.TranscriptPath == "" {
+			return nil
+		}
 		sess = &Session{
 			ID:             firstNonEmpty(p.SessionID, p.TranscriptPath),
 			TranscriptPath: p.TranscriptPath,
@@ -103,9 +111,12 @@ func (s *Store) transition(sess *Session, act transcript.SessionActivity, w Wait
 			sess.Attention = AttentionNeeds
 		}
 	case act == transcript.ActivityWorking && prevAct != act:
-		// Working means the user has engaged — clear any prior attention,
-		// including dismiss (so the next wait re-arms cleanly).
-		sess.Attention = AttentionAck
+		// Working clears a pending "needs" alert (the user has engaged) but
+		// preserves an explicit Dismiss — that's a manual override and we
+		// want it to survive activity cycles + daemon restarts.
+		if sess.Attention == AttentionNeeds {
+			sess.Attention = AttentionAck
+		}
 	}
 }
 

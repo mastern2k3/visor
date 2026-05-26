@@ -38,8 +38,11 @@ func runCtl(args []string) {
 		}
 		ctlSimple("ack", args[1])
 	case "jump":
-		fmt.Fprintln(os.Stderr, "jump: not yet implemented")
-		os.Exit(1)
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "jump: need session id")
+			os.Exit(2)
+		}
+		ctlSimple("jump", args[1])
 	case "watch":
 		// Long-lived subscription: prints one JSON line whenever HUD-observable
 		// state changes. Consumed by eww's deflisten.

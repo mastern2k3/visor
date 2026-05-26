@@ -25,6 +25,9 @@ type Line struct {
 
 	// ai-title records (Claude auto-generated session label)
 	AiTitle string `json:"aiTitle,omitempty"`
+
+	// custom-title records (user-set, e.g. via `/branch <name>`)
+	CustomTitle string `json:"customTitle,omitempty"`
 }
 
 type MessageBody struct {

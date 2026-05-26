@@ -188,11 +188,25 @@ const (
 // and opens/closes/updates windows to match. Positioning is index-based:
 // session N is at y = mon.y + topMargin + (N+1)*(tongueH + gap) — slot 0
 // is reserved for the help tongue.
+//
+// Dismissed sessions are hidden from the dock entirely — that's what
+// dismissing means visually. They stay in the daemon's state (and in
+// `ctl list` for debugging) and reappear when their next state change
+// re-arms attention.
 func (d *dock) applySnapshot(snap []sessionView) {
 	const (
 		topMargin = dockTopMargin
 		gap       = dockGap
 	)
+
+	visible := snap[:0:0]
+	for _, s := range snap {
+		if s.Attention == "dismissed" {
+			continue
+		}
+		visible = append(visible, s)
+	}
+	snap = visible
 
 	// Build set of incoming IDs for diffing.
 	want := make(map[string]int, len(snap))
