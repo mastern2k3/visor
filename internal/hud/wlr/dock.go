@@ -7,7 +7,9 @@ import (
 	"os"
 
 	"codeberg.org/tesselslate/wl"
+	"github.com/BurntSushi/freetype-go/freetype/truetype"
 
+	"github.com/nitzanz/visor/internal/hud/render"
 	"github.com/nitzanz/visor/internal/hud/wlr/protocol"
 )
 
@@ -38,6 +40,14 @@ type dock struct {
 
 	// Which globals were observed during initial roundtrip.
 	hasCompositor, hasShm, hasSeat, hasOutput, hasLayerShell bool
+
+	// Font used by layerSurface.repaint. Nil if font load failed (tongues
+	// will show background colour only, without text labels).
+	font *truetype.Font
+
+	// test is a single static tongue used for smoke-testing in Task 4.
+	// Removed in Task 5 when snapshot-driven surfaces replace it.
+	test *layerSurface
 }
 
 func newDock() (*dock, error) {
@@ -89,6 +99,25 @@ func newDock() (*dock, error) {
 		_ = d.display.Close()
 		return nil, fmt.Errorf("no wl_output advertised by compositor")
 	}
+
+	// Load font; failure is non-fatal — tongues show background colour only.
+	if f, err := render.LoadFont(); err != nil {
+		d.log.Warn("font load failed; tongues will be blank", "err", err)
+	} else {
+		d.font = f
+	}
+
+	// Task 4 smoke test: one static surface to verify the buffer/configure
+	// dance works before wiring up snapshot subscriptions in Task 5.
+	ls, err := newLayerSurface(d, 0, render.TongueState{
+		Color: 0xff5566,
+		Label: "visor wlr smoke test",
+	})
+	if err != nil {
+		_ = d.display.Close()
+		return nil, fmt.Errorf("create test surface: %w", err)
+	}
+	d.test = ls
 
 	d.log.Info("wayland connected")
 	return d, nil
@@ -164,9 +193,14 @@ func (d *dock) onGlobalRemove(_ any, _ wl.Registry, name uint32) error {
 	return nil
 }
 
-// close tears down the Wayland connection. It is safe to call more than once;
-// Display.Close returns ErrAlreadyClosed on subsequent calls which we swallow.
+// close tears down all layer surfaces and the Wayland connection.
+// It is safe to call more than once; Display.Close returns ErrAlreadyClosed
+// on subsequent calls which we swallow.
 func (d *dock) close() {
+	if d.test != nil {
+		d.test.destroy()
+		d.test = nil
+	}
 	if err := d.display.Close(); err != nil {
 		d.log.Debug("display close", "err", err)
 	}
