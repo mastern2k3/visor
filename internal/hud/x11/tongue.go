@@ -31,9 +31,9 @@ import (
 //
 // Layout of the rendered image (window-relative X):
 //
-//   0 .. tongueW        : pure bg color — this is what shows as the "tongue"
-//   tongueW .. textPad  : padding gap between tongue and text
-//   textPad .. expandedW: cwd text
+//	0 .. tongueW        : pure bg color — this is what shows as the "tongue"
+//	tongueW .. textPad  : padding gap between tongue and text
+//	textPad .. expandedW: cwd text
 const (
 	tongueW   = render.TongueW
 	tongueH   = render.TongueH

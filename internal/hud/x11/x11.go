@@ -7,12 +7,13 @@
 // clicks land on whatever's underneath without any input-shape hackery.
 //
 // Per-window properties (set on map):
-//   _NET_WM_WINDOW_TYPE = _NET_WM_WINDOW_TYPE_DOCK   (visible across workspaces)
-//   _NET_WM_STATE       = _NET_WM_STATE_ABOVE,        (always on top)
-//                         _NET_WM_STATE_STICKY,
-//                         _NET_WM_STATE_SKIP_TASKBAR,
-//                         _NET_WM_STATE_SKIP_PAGER
-//   override-redirect   = true                        (no WM decorations/managed-window stealing)
+//
+//	_NET_WM_WINDOW_TYPE = _NET_WM_WINDOW_TYPE_DOCK   (visible across workspaces)
+//	_NET_WM_STATE       = _NET_WM_STATE_ABOVE,        (always on top)
+//	                      _NET_WM_STATE_STICKY,
+//	                      _NET_WM_STATE_SKIP_TASKBAR,
+//	                      _NET_WM_STATE_SKIP_PAGER
+//	override-redirect   = true                        (no WM decorations/managed-window stealing)
 package x11
 
 import (
