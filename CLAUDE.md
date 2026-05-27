@@ -55,7 +55,7 @@ The daemon listens on `$VISOR_SOCK` or `$XDG_RUNTIME_DIR/visor.sock`. Reads tran
 
 **State model.** `internal/state` has two orthogonal axes:
 - *Activity* (objective, from JSONL/hooks): `working` / `waiting` / `unknown`.
-- *Attention* (subjective): `ack` / `needs` / `dismissed`. Dismiss silences a session until the next transition; a working→waiting cycle re-arms `needs`. `Waiting` enum distinguishes `user` vs `permission`.
+- *Attention* (subjective): `ack` / `needs` / `dismissed`. Dismiss silences a session until the next transition; a working→waiting cycle re-arms `needs`. `Waiting` enum distinguishes `user` vs `permission`. Any subsequent live event for a dismissed session (hook or transcript append, but not startup backfill) clears the dismissal — silence is per-quiescent-period, not permanent.
 
 `Snapshot` is what leaves the store — sorted by attention priority (needs > ack > dismissed), then by `FirstSeen`, so HUD tongues do not reshuffle on every update. `display_cwd` is computed server-side (`$HOME → ~`) so backends don't need home-dir logic.
 

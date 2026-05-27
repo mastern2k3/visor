@@ -102,31 +102,56 @@ func ctlSimple(cmd, id string) {
 }
 
 func ctlWatch() {
-	// We dial the socket directly so we can keep the connection open and
-	// stream line-delimited JSON for eww's deflisten. The ipc.Call helper
-	// is one-shot, so it's the wrong tool here.
+	// Long-lived stream for eww's deflisten. The daemon can die and restart
+	// under us, so we reconnect with backoff rather than exiting — that keeps
+	// the deflisten widget alive across daemon restarts. On disconnect we emit
+	// an empty array so the HUD clears instead of showing stale sessions.
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+
+	const (
+		minBackoff = 200 * time.Millisecond
+		maxBackoff = 2 * time.Second
+	)
+	backoff := minBackoff
+	for {
+		connected := watchOnce(out)
+		// Connection is down (or never came up): clear the HUD and back off.
+		fmt.Fprintln(out, "[]")
+		out.Flush()
+		if connected {
+			backoff = minBackoff // daemon was alive; recover fast next time
+		}
+		time.Sleep(backoff)
+		if !connected && backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+// watchOnce holds one connection's lifetime, copying snapshot lines to out.
+// Returns true if it reached a live subscription (got the ack line) before the
+// connection ended — used by the caller to decide whether to reset backoff.
+func watchOnce(out *bufio.Writer) bool {
 	c, err := net.Dial("unix", paths.Socket())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "watch:", err)
-		os.Exit(1)
+		return false
 	}
 	defer c.Close()
 	req := ipc.Request{Cmd: "watch"}
 	b, _ := json.Marshal(req)
 	b = append(b, '\n')
 	if _, err := c.Write(b); err != nil {
-		fmt.Fprintln(os.Stderr, "watch:", err)
-		os.Exit(1)
+		return false
 	}
 	br := bufio.NewReader(c)
 	// First line is the Response acknowledgement.
 	if _, err := br.ReadBytes('\n'); err != nil {
-		fmt.Fprintln(os.Stderr, "watch:", err)
-		os.Exit(1)
+		return false
 	}
-	// Subsequent lines are snapshot updates.
-	out := bufio.NewWriter(os.Stdout)
-	defer out.Flush()
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
@@ -134,7 +159,7 @@ func ctlWatch() {
 			out.Flush()
 		}
 		if err != nil {
-			return
+			return true
 		}
 	}
 }

@@ -75,6 +75,15 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 	}
 	sess.LastUpdate = time.Now()
 
+	// Any live event on a dismissed session clears the dismissal — the user
+	// re-engaged, so they want it back in the dock. The activity-bearing
+	// branches below may promote to Needs; otherwise it lands at Ack.
+	// SessionEnd is excluded since the session is about to be deleted.
+	if sess.Attention == AttentionDismiss && event != "SessionEnd" {
+		sess.Attention = AttentionAck
+		delete(s.dismissed, sess.ID)
+	}
+
 	switch event {
 	case "SessionStart":
 		// metadata already captured above
@@ -107,13 +116,9 @@ func (s *Store) transition(sess *Session, act transcript.SessionActivity, w Wait
 	switch {
 	case act == transcript.ActivityWaitingUser && prevAct != act:
 		sess.LastWaiting = time.Now()
-		if sess.Attention != AttentionDismiss {
-			sess.Attention = AttentionNeeds
-		}
+		sess.Attention = AttentionNeeds
 	case act == transcript.ActivityWorking && prevAct != act:
-		// Working clears a pending "needs" alert (the user has engaged) but
-		// preserves an explicit Dismiss — that's a manual override and we
-		// want it to survive activity cycles + daemon restarts.
+		// Working clears a pending "needs" alert (the user has engaged).
 		if sess.Attention == AttentionNeeds {
 			sess.Attention = AttentionAck
 		}

@@ -75,10 +75,7 @@ func (d *dock) run() error {
 	}
 
 	snaps := make(chan []sessionView, 4)
-	subErrs := make(chan error, 1)
-	go func() {
-		subErrs <- subscribe(snaps)
-	}()
+	go subscribeLoop(snaps, d.log)
 	d.log.Info("subscribed to visor daemon")
 
 	pingBefore, pingAfter, pingQuit := xevent.MainPing(d.X)
@@ -102,9 +99,6 @@ func (d *dock) run() error {
 			d.applySnapshot(snap)
 		case now := <-anim.C:
 			d.animate(now)
-		case err := <-subErrs:
-			d.log.Error("subscription ended", "err", err)
-			d.quit()
 		case <-sig:
 			d.log.Info("signal received; shutting down")
 			d.quit()

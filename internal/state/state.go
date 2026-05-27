@@ -4,8 +4,8 @@
 //   - Activity (from JSONL/hooks): working | waiting | unknown
 //   - Attention (subjective): needs | acknowledged | dismissed
 //
-// Dismiss silences a session until the next activity transition (working↔waiting
-// re-arms attention). Permission prompts are a separate sub-state of "waiting"
+// Dismiss silences a session until the next live event (any hook or transcript
+// append clears the dismissal). Permission prompts are a separate sub-state of "waiting"
 // because they need different visual treatment in the HUD.
 package state
 
@@ -300,19 +300,23 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 			sess.Activity = newAct
 		}
 	}
+	// Live transcript appends on a dismissed session clear the dismissal —
+	// new activity means the user is engaging again. Backfill (isInitial)
+	// must not un-silence; that's the whole point of persisting dismiss.
+	if !isInitial && len(lines) > 0 && sess.Attention == AttentionDismiss {
+		sess.Attention = AttentionAck
+		delete(s.dismissed, sess.ID)
+	}
 	if sess.Activity != prev {
 		changed = true
 		if sess.Activity == transcript.ActivityWaitingUser {
 			sess.LastWaiting = time.Now()
 			sess.Waiting = WaitingUser
-			if !isInitial && sess.Attention != AttentionDismiss {
+			if !isInitial {
 				sess.Attention = AttentionNeeds
 			}
 		} else if sess.Activity == transcript.ActivityWorking {
 			sess.Waiting = WaitingNone
-			// Working clears a pending "needs" alert (the user has engaged)
-			// but preserves an explicit Dismiss — that's a manual user
-			// override that should survive activity cycles and restarts.
 			if sess.Attention == AttentionNeeds {
 				sess.Attention = AttentionAck
 			}
@@ -321,8 +325,10 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 	return changed
 }
 
-// Dismiss silences a session until the next activity transition.
-// The dismiss is persisted (via notify → savePersisted) so it survives restarts.
+// Dismiss silences a session until the next live event arrives for it
+// (any hook or transcript append clears the dismissal in ApplyHook /
+// ApplyTranscript). The dismiss is persisted across daemon restarts so
+// silencing survives a reboot when the session is idle.
 func (s *Store) Dismiss(id string) bool {
 	s.mu.Lock()
 	sess, ok := s.sessions[id]
