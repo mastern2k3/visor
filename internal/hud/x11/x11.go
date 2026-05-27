@@ -20,7 +20,11 @@ import (
 
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/xinerama"
+
+	"github.com/nitzanz/visor/internal/hud"
 )
+
+var _ hud.Backend = (*Backend)(nil)
 
 // Backend implements hud.Backend by spawning an X11 dock process that
 // subscribes to the visor daemon and manages one window per session.

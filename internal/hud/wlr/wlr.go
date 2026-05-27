@@ -5,7 +5,7 @@
 // so a frame is never modified while the compositor holds it.
 //
 // Compositor requirements: zwlr_layer_shell_v1 must be in the registry.
-// Tested on Niri (primary), sway, and hyprland. Will NOT work on GNOME —
+// Targets Niri (primary), sway, hyprland. Will NOT work on GNOME —
 // use --backend=x11 (Xwayland) there.
 package wlr
 
@@ -14,7 +14,11 @@ import (
 	"fmt"
 	"os/signal"
 	"syscall"
+
+	"github.com/nitzanz/visor/internal/hud"
 )
+
+var _ hud.Backend = (*Backend)(nil)
 
 // Backend implements hud.Backend by running an in-process Wayland client
 // that subscribes to the visor daemon and manages one layer surface per
@@ -33,7 +37,7 @@ func (b *Backend) Open() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	d, err := newDock(ctx)
+	d, err := newDock()
 	if err != nil {
 		return fmt.Errorf("connect wayland: %w", err)
 	}

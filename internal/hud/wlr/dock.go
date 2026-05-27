@@ -25,25 +25,22 @@ const (
 type dock struct {
 	log *slog.Logger
 
-	display    *wl.Display
-	registry   wl.Registry
+	// Wayland connection + registry.
+	display  *wl.Display
+	registry wl.Registry
+
+	// Bound globals.
 	compositor wl.Compositor
 	shm        wl.Shm
 	seat       wl.Seat
 	output     wl.Output
 	layerShell protocol.LayerShellV1
 
-	// hasCompositor/shm/seat/output/layerShell track whether each global has
-	// been bound. We use pointer-zero checks on wl.Object underneath, but the
-	// generated types are value types so we use explicit flags instead.
-	hasCompositor bool
-	hasShm        bool
-	hasSeat       bool
-	hasOutput     bool
-	hasLayerShell bool
+	// Which globals were observed during initial roundtrip.
+	hasCompositor, hasShm, hasSeat, hasOutput, hasLayerShell bool
 }
 
-func newDock(_ context.Context) (*dock, error) {
+func newDock() (*dock, error) {
 	d := &dock{
 		log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
 	}
@@ -167,26 +164,25 @@ func (d *dock) onGlobalRemove(_ any, _ wl.Registry, name uint32) error {
 	return nil
 }
 
-// close tears down the Wayland connection. It is safe to call more than once.
+// close tears down the Wayland connection. It is safe to call more than once;
+// Display.Close returns ErrAlreadyClosed on subsequent calls which we swallow.
 func (d *dock) close() {
-	if d.display != nil {
-		if err := d.display.Close(); err != nil {
-			d.log.Debug("display close", "err", err)
-		}
-		d.display = nil
+	if err := d.display.Close(); err != nil {
+		d.log.Debug("display close", "err", err)
 	}
 }
 
-// run pumps the Wayland event loop until ctx is cancelled. A watcher goroutine
-// calls Display.Close on cancellation, which causes Dispatch to return with an
-// error (connection closed). We treat that error as clean shutdown when
-// ctx.Err() is non-nil.
+// run pumps the Wayland event loop until ctx is cancelled or a dispatch/flush
+// error occurs. A derived context ensures the watcher goroutine is torn down
+// before run returns, regardless of which condition triggered the exit
+// (outer cancellation or compositor disconnect).
 func (d *dock) run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // ensure watcher goroutine exits before run returns
+
 	go func() {
 		<-ctx.Done()
-		if d.display != nil {
-			_ = d.display.Close()
-		}
+		_ = d.display.Close()
 	}()
 
 	for {
