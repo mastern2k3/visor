@@ -3,6 +3,9 @@ package wlr
 import (
 	"fmt"
 	"log/slog"
+	"math"
+	"math/rand"
+	"time"
 
 	"codeberg.org/tesselslate/wl"
 
@@ -10,8 +13,26 @@ import (
 	"github.com/nitzanz/visor/internal/hud/wlr/protocol"
 )
 
-// tongueGap is the vertical space in pixels between adjacent tongues.
-const tongueGap = 4
+const (
+	// tongueGap is the vertical space in pixels between adjacent tongues.
+	tongueGap = 4
+
+	// topOffset shifts the whole dock down from the top of the screen so it
+	// doesn't sit under a top bar or overlap chrome the user wants to see.
+	topOffset = 256
+
+	// Wobble animation for "working" tongues — they breathe leftward (toward
+	// the centre of the screen) with cosine easing. Each tongue gets a
+	// randomized phase so adjacent tongues don't pulse in lockstep.
+	wobbleAmp    = 4.0
+	wobblePeriod = 0.9 // seconds for one full cycle
+
+	// alertProtrusion: a session with attention=needs sits this many pixels
+	// further from the right edge so it's distinguishable by shape alone, not
+	// just colour. Chosen > wobbleAmp so a needs tongue is unambiguously
+	// further out than any working tongue at its wobble peak.
+	alertProtrusion = 8
+)
 
 // layerSurface is one tongue: a wl_surface + zwlr_layer_surface_v1 pair plus
 // the shm pool that backs its frames.
@@ -29,6 +50,18 @@ type layerSurface struct {
 	// sessionID is the daemon session ID used to route IPC commands (ack,
 	// dismiss, jump) from pointer click events.
 	sessionID string
+
+	// Raw daemon state needed to drive animation. Kept alongside the rendered
+	// TongueState so the renderer stays pure.
+	activity  string
+	attention string
+
+	// Slot and current applied right margin (in px from the screen edge). Tracked
+	// so the animation tick can detect changes and avoid unnecessary commits.
+	slot         int
+	rightMargin  int32
+	wobbleStart  time.Time
+	wobblePhase  float64
 
 	// dirty is true when a state change happened but the most recent repaint
 	// couldn't acquire a buffer (both were in-flight). The next wl_buffer.release
@@ -56,7 +89,7 @@ type layerSurface struct {
 // and commits with no buffer attached to trigger the first configure event.
 // The compositor calls our configure handler before mapping the surface; we
 // ack there and attach the first frame.
-func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*layerSurface, error) {
+func newLayerSurface(d *dock, slot int, id, activity, attention string, st render.TongueState) (*layerSurface, error) {
 	surf := d.compositor.CreateSurface()
 	ls := d.layerShell.GetLayerSurface(
 		surf,
@@ -70,7 +103,8 @@ func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*laye
 	ls.SetAnchor(protocol.LayerSurfaceV1AnchorTop | protocol.LayerSurfaceV1AnchorRight)
 	ls.SetSize(uint32(render.ExpandedW), uint32(render.TongueH))
 	ls.SetExclusiveZone(-1)
-	ls.SetMargin(int32(slot*(render.TongueH+tongueGap)), 0, 0, 0) // top, right, bottom, left
+	initialRight := restRightMargin(attention)
+	ls.SetMargin(int32(slotTopMargin(slot)), initialRight, 0, 0) // top, right, bottom, left
 	ls.SetKeyboardInteractivity(protocol.LayerSurfaceV1KeyboardInteractivityNone)
 
 	// Pre-build the two input regions used to gate pointer Enter/Leave.
@@ -84,10 +118,16 @@ func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*laye
 		ls:           ls,
 		state:        st,
 		sessionID:    id,
+		activity:     activity,
+		attention:    attention,
 		log:          d.log,
 		d:            d,
 		regionTongue: regionTongue,
 		regionFull:   regionFull,
+		slot:         slot,
+		rightMargin:  initialRight,
+		wobbleStart:  time.Now(),
+		wobblePhase:  rand.Float64() * 2 * math.Pi,
 	}
 
 	// Start with the tongue-only input region — newly-created surfaces are
@@ -165,8 +205,55 @@ func (s *layerSurface) repaint(d *dock) {
 // batch primitive at this layer.
 // Must be called from the Wayland dispatch goroutine.
 func (s *layerSurface) setSlot(slot int) {
-	s.ls.SetMargin(int32(slot*(render.TongueH+tongueGap)), 0, 0, 0)
+	s.slot = slot
+	s.ls.SetMargin(int32(slotTopMargin(slot)), s.rightMargin, 0, 0)
 	s.surface.Commit()
+}
+
+// animateTick recomputes the right-margin based on the current activity /
+// attention state and the elapsed time, then commits if it changed. Returns
+// true when a commit was issued. Called from the dock's event loop.
+func (s *layerSurface) animateTick(now time.Time) bool {
+	target := s.computeRightMargin(now)
+	if target == s.rightMargin {
+		return false
+	}
+	s.rightMargin = target
+	s.ls.SetMargin(int32(slotTopMargin(s.slot)), target, 0, 0)
+	s.surface.Commit()
+	return true
+}
+
+// computeRightMargin returns the right-margin (px from screen edge) for the
+// surface at time `now`. Base = alertProtrusion if attention=needs else 0.
+// Working sessions add a cosine-eased wobble on top of the base.
+func (s *layerSurface) computeRightMargin(now time.Time) int32 {
+	base := int32(0)
+	if s.attention == "needs" {
+		base = alertProtrusion
+	}
+	if s.activity == "working" {
+		elapsed := now.Sub(s.wobbleStart).Seconds()
+		// (1 - cos)/2 maps to [0, 1] with zero derivative at the endpoints.
+		t01 := (1 - math.Cos(elapsed*2*math.Pi/wobblePeriod+s.wobblePhase)) / 2
+		return base + int32(math.Round(wobbleAmp*t01))
+	}
+	return base
+}
+
+// restRightMargin is the static right-margin used at surface creation time
+// before animation kicks in.
+func restRightMargin(attention string) int32 {
+	if attention == "needs" {
+		return alertProtrusion
+	}
+	return 0
+}
+
+// slotTopMargin converts a slot index into a top-margin in px, including the
+// global topOffset and the per-tongue gap.
+func slotTopMargin(slot int) int {
+	return topOffset + slot*(render.TongueH+tongueGap)
 }
 
 // destroy tears down the layer surface and releases the shm pool.

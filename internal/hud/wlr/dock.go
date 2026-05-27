@@ -274,6 +274,14 @@ func (d *dock) run(ctx context.Context) error {
 			}
 		}
 
+		// Animation tick: working tongues wobble, needs tongues protrude.
+		// Each surface decides whether its margin actually changed and only
+		// commits when it did.
+		now := time.Now()
+		for _, s := range d.surfaces {
+			s.animateTick(now)
+		}
+
 		// Force Dispatch() to return in bounded time. wl_callback is
 		// auto-destroyed by the dispatch path after Done fires, so no leak.
 		cb := d.display.Sync()
@@ -332,10 +340,13 @@ func (d *dock) applySnapshot(snap []sessionView) {
 				ls.state = st
 				ls.repaint(d)
 			}
+			// Update animation-relevant fields; the next tick picks up changes.
+			ls.activity = s.Activity
+			ls.attention = s.Attention
 			// Re-stack: slot may have changed.
 			ls.setSlot(slot)
 		} else {
-			ls, err := newLayerSurface(d, slot, s.ID, st)
+			ls, err := newLayerSurface(d, slot, s.ID, s.Activity, s.Attention, st)
 			if err != nil {
 				d.log.Warn("create surface", "id", s.ID, "err", err)
 				slot++
