@@ -89,6 +89,24 @@ func unpackRGBA(c uint32) color.RGBA {
 	}
 }
 
+// ColorFor maps session state (activity, attention, waiting) to the canonical
+// 0x00RRGGBB tongue colour shared by all backends. Both x11 and wlr call this
+// so the colour scheme never drifts between backends.
+func ColorFor(activity, attention, waiting string) uint32 {
+	switch {
+	case attention == "needs" && waiting == "permission":
+		return 0xff7a7a // red — blocked on approval
+	case attention == "needs":
+		return 0xebcb8b // amber — waiting for user
+	case attention == "dismissed":
+		return 0x3b414e // dim — silenced
+	case activity == "working":
+		return 0x88c0d0 // cyan — busy
+	default:
+		return 0x6b7280 // grey — idle/ack
+	}
+}
+
 // contrastFG returns a foreground colour that reads well against bg.
 // Cheap luminance check (Rec. 601 weights): anything bright gets near-black
 // text, anything dark gets near-white. The 140 threshold is empirical —

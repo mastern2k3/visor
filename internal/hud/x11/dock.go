@@ -242,17 +242,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 }
 
 // colorFor maps session state to a 0xRRGGBB tongue colour.
+// It delegates to render.ColorFor so the colour scheme is shared with wlr.
 func colorFor(s sessionView) uint32 {
-	switch {
-	case s.Attention == "needs" && s.Waiting == "permission":
-		return 0xff7a7a // red — blocked on approval
-	case s.Attention == "needs":
-		return 0xebcb8b // amber — waiting for user
-	case s.Attention == "dismissed":
-		return 0x3b414e // dim — silenced
-	case s.Activity == "working":
-		return 0x88c0d0 // cyan — busy
-	default:
-		return 0x6b7280 // grey — idle/ack
-	}
+	return render.ColorFor(s.Activity, s.Attention, s.Waiting)
 }

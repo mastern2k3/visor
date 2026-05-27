@@ -45,9 +45,8 @@ type dock struct {
 	// will show background colour only, without text labels).
 	font *truetype.Font
 
-	// test is a single static tongue used for smoke-testing in Task 4.
-	// Removed in Task 5 when snapshot-driven surfaces replace it.
-	test *layerSurface
+	// surfaces maps session id → layer surface. Driven by daemon snapshots.
+	surfaces map[string]*layerSurface
 }
 
 func newDock() (*dock, error) {
@@ -107,17 +106,7 @@ func newDock() (*dock, error) {
 		d.font = f
 	}
 
-	// Task 4 smoke test: one static surface to verify the buffer/configure
-	// dance works before wiring up snapshot subscriptions in Task 5.
-	ls, err := newLayerSurface(d, 0, render.TongueState{
-		Color: 0xff5566,
-		Label: "visor wlr smoke test",
-	})
-	if err != nil {
-		_ = d.display.Close()
-		return nil, fmt.Errorf("create test surface: %w", err)
-	}
-	d.test = ls
+	d.surfaces = map[string]*layerSurface{}
 
 	d.log.Info("wayland connected")
 	return d, nil
@@ -197,29 +186,59 @@ func (d *dock) onGlobalRemove(_ any, _ wl.Registry, name uint32) error {
 // It is safe to call more than once; Display.Close returns ErrAlreadyClosed
 // on subsequent calls which we swallow.
 func (d *dock) close() {
-	if d.test != nil {
-		d.test.destroy()
-		d.test = nil
+	for _, s := range d.surfaces {
+		s.destroy()
 	}
+	d.surfaces = map[string]*layerSurface{}
 	if err := d.display.Close(); err != nil {
 		d.log.Debug("display close", "err", err)
 	}
 }
 
 // run pumps the Wayland event loop until ctx is cancelled or a dispatch/flush
-// error occurs. A derived context ensures the watcher goroutine is torn down
-// before run returns, regardless of which condition triggered the exit
-// (outer cancellation or compositor disconnect).
+// error occurs.
+//
+// Event-loop pattern: tesselslate/wl only exposes a blocking Dispatch() with
+// no non-blocking variant. To interleave snapshot updates with Wayland events
+// without racing on Wayland objects, we keep ALL Wayland mutations on this
+// single goroutine. We ensure Dispatch() returns promptly by issuing a
+// wl_display.sync before each blocking call; the compositor replies with a
+// wl_callback.done event, which wakes Dispatch(). Snapshot updates are drained
+// after each wakeup, so latency is at most one compositor round-trip (~1 ms on
+// a local socket) rather than being unbounded.
 func (d *dock) run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel() // ensure watcher goroutine exits before run returns
+	snaps := make(chan []sessionView, 4)
+	go subscribeLoop(snaps, d.log)
 
+	// Goroutine that closes the display when ctx is cancelled, which causes
+	// an in-progress Dispatch() to return with an error that we treat as clean
+	// shutdown.
 	go func() {
 		<-ctx.Done()
 		_ = d.display.Close()
 	}()
 
 	for {
+		// Drain any pending snapshot updates before blocking on Dispatch.
+		for {
+			select {
+			case snap := <-snaps:
+				d.applySnapshot(snap)
+			default:
+				goto doneSnaps
+			}
+		}
+	doneSnaps:
+
+		// Issue a sync so the compositor will send back a wl_callback.done
+		// event, guaranteeing that Dispatch() returns in finite time even when
+		// there is no other compositor activity. This is safe because sync
+		// writes to the write queue which is only touched on this goroutine.
+		cb := d.display.Sync()
+		cb.SetListener(wl.CallbackListener{
+			Done: func(_ any, _ wl.Callback, _ uint32) error { return nil },
+		}, nil)
+
 		if err := d.display.Flush(); err != nil {
 			if ctx.Err() != nil {
 				return nil // clean shutdown
@@ -233,4 +252,62 @@ func (d *dock) run(ctx context.Context) error {
 			return fmt.Errorf("dispatch: %w", err)
 		}
 	}
+}
+
+// applySnapshot diffs the incoming session list against the current surface
+// map and creates/destroys/updates surfaces to match.
+// applySnapshot must be called from the same goroutine that owns all Wayland
+// objects (the run() goroutine).
+func (d *dock) applySnapshot(snap []sessionView) {
+	seen := map[string]bool{}
+	for i, s := range snap {
+		seen[s.ID] = true
+		st := render.TongueState{
+			Color: colorFor(s),
+			Label: labelFor(s),
+		}
+		if ls, ok := d.surfaces[s.ID]; ok {
+			if ls.state != st {
+				ls.state = st
+				ls.repaint(d)
+			}
+			// Re-stack: slot may have changed.
+			ls.setSlot(i)
+		} else {
+			ls, err := newLayerSurface(d, i, st)
+			if err != nil {
+				d.log.Warn("create surface", "id", s.ID, "err", err)
+				continue
+			}
+			d.surfaces[s.ID] = ls
+		}
+	}
+
+	// Destroy surfaces for sessions no longer present (or nil snapshot = clear all).
+	for id, ls := range d.surfaces {
+		if !seen[id] {
+			ls.destroy()
+			delete(d.surfaces, id)
+		}
+	}
+}
+
+// labelFor mirrors x11.displayLabel: prefer ai-title, then cwd, then id[:8].
+func labelFor(s sessionView) string {
+	if s.Title != "" {
+		return s.Title
+	}
+	if s.DisplayCWD != "" {
+		return s.DisplayCWD
+	}
+	if len(s.ID) >= 8 {
+		return s.ID[:8]
+	}
+	return s.ID
+}
+
+// colorFor maps session state to the canonical 0x00RRGGBB tongue colour,
+// delegating to render.ColorFor so all backends share the same scheme.
+func colorFor(s sessionView) uint32 {
+	return render.ColorFor(s.Activity, s.Attention, s.Waiting)
 }

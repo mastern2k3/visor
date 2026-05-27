@@ -101,6 +101,14 @@ func (s *layerSurface) repaint(d *dock) {
 	s.surface.Commit()
 }
 
+// setSlot updates the vertical position of this surface within the dock by
+// re-issuing set_margin (top margin = slot * TongueH) and committing.
+// Must be called from the Wayland dispatch goroutine.
+func (s *layerSurface) setSlot(slot int) {
+	s.ls.SetMargin(int32(slot*render.TongueH), 0, 0, 0)
+	s.surface.Commit()
+}
+
 // destroy tears down the layer surface and releases the shm pool.
 // Destroy order matters: destroy the layer_surface protocol object before the
 // underlying wl_surface to avoid a protocol error.
