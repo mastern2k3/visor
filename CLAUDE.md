@@ -27,7 +27,7 @@ go build -o bin/visor ./cmd/visor
 ./bin/visor ctl ack <id>
 ./bin/visor ctl jump <id>           # warps focus via internal/focus (X11 + tmux)
 
-# HUD — picks a backend with --backend=eww (default) or --backend=x11
+# HUD — picks a backend with --backend=eww (default), --backend=x11, or --backend=wlr
 ./bin/visor hud install
 ./bin/visor hud open
 ./bin/visor hud close
@@ -63,7 +63,7 @@ The daemon listens on `$VISOR_SOCK` or `$XDG_RUNTIME_DIR/visor.sock`. Reads tran
 
 **IPC.** `internal/ipc` — one JSON request per line over a Unix socket, one response back. A `Response.Stream` channel switches the server into long-lived line-streaming mode (used by `watch`). `ipc.Call` is one-shot; the `watch` ctl handler dials directly to keep the connection open.
 
-**HUD backends.** `internal/hud/hud.go` defines a minimal `Backend` interface (`Name / Install / Open / Close`). Today: `eww` (yuck config that consumes `visor ctl watch` via `deflisten`) and `x11` (pure-Go native dock via `jezek/xgb` + `xgbutil` — one override-redirect window per session, EWMH dock/sticky/above hints, no transparent regions so clicks between tongues hit the desktop; text rendering via `freetype-go` + `xgraphics`, see `internal/hud/x11/font.go` for the font-discovery fallback list). `cmd/visor/hud.go::pickBackend` is the registry — add a new package under `internal/hud/<name>/`, implement Backend, and add a case. Do not widen the interface until at least two backends need a new method.
+**HUD backends.** `internal/hud/hud.go` defines a minimal `Backend` interface (`Name / Install / Open / Close`). Today: `eww` (yuck config that consumes `visor ctl watch` via `deflisten`), `x11` (pure-Go native dock via `jezek/xgb` + `xgbutil` — one override-redirect window per session, EWMH dock/sticky/above hints, no transparent regions so clicks between tongues hit the desktop), and `wlr` (pure-Go Wayland-native dock via `codeberg.org/tesselslate/wl` + locally-generated `wlr-layer-shell-unstable-v1` bindings in `internal/hud/wlr/protocol/` — one `zwlr_layer_surface_v1` per session, anchored right, ARGB8888 `wl_shm` buffers double-buffered with release tracking; collapsed tongues render the panel region transparent so only the leftmost strip is visible). Both native backends share pixel drawing via `internal/hud/render` (`DrawTongue`, `ColorFor`, font discovery — see the candidate list at `internal/hud/render/font.go`). Compositor coverage for `wlr`: Niri, sway, hyprland, river, wayfire, labwc, KDE. GNOME has no layer-shell — use `--backend=x11` (via XWayland) there. `cmd/visor/hud.go::pickBackend` is the registry — add a new package under `internal/hud/<name>/`, implement Backend, and add a case. Do not widen the interface until a new backend needs a method neither existing one has.
 
 **Tongue clicks (x11 backend).** Left = `jump` (focus dispatch), middle = `dismiss`, right = `ack`. See `internal/hud/x11/tongue.go::onButton`.
 
@@ -77,6 +77,8 @@ The daemon listens on `$VISOR_SOCK` or `$XDG_RUNTIME_DIR/visor.sock`. Reads tran
 - **`xevent.Quit` only sets a flag.** If the X loop is blocked inside `Read`, the flag is never checked. `dock.quit()` sends a synthetic ClientMessage to root to wake it. If you add another shutdown path, mirror that.
 - **PID capture happens in the hook wrapper.** `$PPID` in `scripts/visor-hook.sh` is the claude process. If you ever invoke `visor hook` differently, set `CLAUDE_PID` explicitly or this metadata is lost.
 - **Backfill discovery filters by `mtime > 24h ago`** to avoid storming the daemon with historical transcripts. Active sessions older than 24h get picked up only when something appends to their JSONL or a hook fires.
+- **wlr buffer ownership.** The compositor owns each `wl_buffer` from `attach`+`commit` until it sends `wl_buffer.release`. Reusing a buffer earlier corrupts pixels silently. `internal/hud/wlr/buffer.go` tracks a `released bool` per buffer; never bypass it. The Wayland dispatch goroutine is the single mutator — calling `Acquire()` from another goroutine would need synchronization.
+- **wlr dispatch loop is a 20Hz poller, not edge-triggered.** `tesselslate/wl` doesn't expose the display fd, so `dock.run()` uses a rate-limited `wl_display.sync` wakeup to bound `Dispatch()` latency. Snapshot updates interrupt the sleep, so user-visible latency stays low. Proper fix would be vendor-patching `tesselslate/wl` to expose `Display.Fd()` and switching to `unix.Poll`.
 
 ## Conventions
 
