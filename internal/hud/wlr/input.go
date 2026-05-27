@@ -82,6 +82,9 @@ func (p *pointer) onButton(_ any, _ wl.Pointer, _ uint32, _ uint32, button uint3
 		cmd = "ack"
 	case btnRight:
 		cmd = "dismiss"
+	default:
+		p.d.log.Debug("wlr pointer button ignored", "button", button)
+		return nil
 	}
 	if cmd == "" || p.focused.sessionID == "" {
 		return nil

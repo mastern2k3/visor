@@ -46,7 +46,9 @@ type dock struct {
 	// will show background colour only, without text labels).
 	font *truetype.Font
 
-	// surfaces maps session id → layer surface. Driven by daemon snapshots.
+	// surfaces is keyed by session id. layerSurface values can be compared with
+	// == in findSurface because wl.Surface embeds a pointer to per-object data,
+	// so value equality reduces to pointer equality of that backing data.
 	surfaces map[string]*layerSurface
 
 	// pointer handles wl_pointer events (hover-expand, click-to-act).
@@ -199,6 +201,9 @@ func (d *dock) close() {
 	for _, s := range d.surfaces {
 		s.destroy()
 	}
+	if d.pointer != nil {
+		d.pointer.wp.Release()
+	}
 	if err := d.display.Close(); err != nil {
 		d.log.Debug("display close", "err", err)
 	}
@@ -315,6 +320,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			Label: labelFor(s),
 		}
 		if ls, ok := d.surfaces[s.ID]; ok {
+			st.Expanded = ls.state.Expanded // preserve hover state across snapshot updates
 			if ls.state != st {
 				ls.state = st
 				ls.repaint(d)
@@ -336,6 +342,9 @@ func (d *dock) applySnapshot(snap []sessionView) {
 	// Destroy surfaces for sessions no longer present (or nil snapshot = clear all).
 	for id, ls := range d.surfaces {
 		if !seen[id] {
+			if d.pointer != nil && d.pointer.focused == ls {
+				d.pointer.focused = nil
+			}
 			ls.destroy()
 			delete(d.surfaces, id)
 		}
