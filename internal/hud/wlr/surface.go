@@ -10,6 +10,9 @@ import (
 	"github.com/nitzanz/visor/internal/hud/wlr/protocol"
 )
 
+// tongueGap is the vertical space in pixels between adjacent tongues.
+const tongueGap = 4
+
 // layerSurface is one tongue: a wl_surface + zwlr_layer_surface_v1 pair plus
 // the shm pool that backs its frames.
 //
@@ -47,7 +50,7 @@ func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*laye
 	ls.SetAnchor(protocol.LayerSurfaceV1AnchorTop | protocol.LayerSurfaceV1AnchorRight)
 	ls.SetSize(uint32(render.ExpandedW), uint32(render.TongueH))
 	ls.SetExclusiveZone(-1)
-	ls.SetMargin(int32(slot*render.TongueH), 0, 0, 0) // top, right, bottom, left
+	ls.SetMargin(int32(slot*(render.TongueH+tongueGap)), 0, 0, 0) // top, right, bottom, left
 	ls.SetKeyboardInteractivity(protocol.LayerSurfaceV1KeyboardInteractivityNone)
 
 	ps := &layerSurface{
@@ -110,7 +113,7 @@ func (s *layerSurface) repaint(d *dock) {
 // batch primitive at this layer.
 // Must be called from the Wayland dispatch goroutine.
 func (s *layerSurface) setSlot(slot int) {
-	s.ls.SetMargin(int32(slot*render.TongueH), 0, 0, 0)
+	s.ls.SetMargin(int32(slot*(render.TongueH+tongueGap)), 0, 0, 0)
 	s.surface.Commit()
 }
 

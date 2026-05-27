@@ -65,6 +65,35 @@ func TestDrawTongue_ExpandedHasOpaquePanel(t *testing.T) {
 	}
 }
 
+func TestDrawTongue_TongueRight_CollapsedHasTransparentLeft(t *testing.T) {
+	img := DrawTongue(TongueState{Color: 0x223344, Expanded: false, TongueRight: true}, nil)
+	// Tongue strip at right edge (x=ExpandedW-2) should be opaque.
+	got := img.RGBA.RGBAAt(ExpandedW-2, TongueH/2)
+	if got.A != 0xff {
+		t.Errorf("right-edge tongue strip alpha = %#x, want 0xff", got.A)
+	}
+	// Panel region (x=150) should be transparent.
+	got = img.RGBA.RGBAAt(150, TongueH/2)
+	if got.A != 0 {
+		t.Errorf("panel alpha = %#x, want 0", got.A)
+	}
+	// Far-left should be transparent too.
+	got = img.RGBA.RGBAAt(2, TongueH/2)
+	if got.A != 0 {
+		t.Errorf("far-left alpha = %#x, want 0", got.A)
+	}
+}
+
+func TestDrawTongue_TongueRight_ExpandedHasOpaqueFull(t *testing.T) {
+	img := DrawTongue(TongueState{Color: 0x223344, Expanded: true, TongueRight: true}, nil)
+	for _, x := range []int{2, 150, ExpandedW - 2} {
+		got := img.RGBA.RGBAAt(x, TongueH/2)
+		if got.A != 0xff {
+			t.Errorf("x=%d alpha = %#x, want 0xff", x, got.A)
+		}
+	}
+}
+
 func TestContrastFG(t *testing.T) {
 	cases := []struct {
 		bg   color.RGBA

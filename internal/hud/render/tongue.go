@@ -28,6 +28,14 @@ type TongueState struct {
 	Color    uint32 // 0x00RRGGBB; high byte ignored
 	Label    string // already-resolved display label (Title || DisplayCWD || ID[:8])
 	Expanded bool   // true = full opaque panel; false = panel region is transparent
+	// TongueRight controls which side of the buffer the opaque "tongue strip"
+	// sits on. False (default): leftmost TongueW pixels are the tongue; panel
+	// extends rightward. Used by the x11 backend, whose window slides off the
+	// right edge of the screen and reveals the leftmost pixels first.
+	// True: rightmost TongueW pixels are the tongue; panel extends leftward.
+	// Used by the wlr backend, whose right-anchored layer surface puts buffer
+	// x=ExpandedW-1 at the screen's right edge.
+	TongueRight bool
 }
 
 // TongueImage is the rendered output plus metadata x11/wlr both need.
@@ -39,9 +47,13 @@ type TongueImage struct {
 // DrawTongue produces an ExpandedW-by-TongueH RGBA buffer with a solid
 // background and the label rendered starting at TextPad.
 //
-// When s.Expanded is false (collapsed), the panel region (x = TongueW..ExpandedW)
-// is cleared to fully transparent RGBA{0,0,0,0} and text rendering is skipped.
-// Only the leftmost TongueW pixels (the tongue strip) remain opaque.
+// When s.Expanded is false (collapsed), the panel region is cleared to fully
+// transparent RGBA{0,0,0,0} and text rendering is skipped. Which side is the
+// "tongue strip" depends on s.TongueRight:
+//   - false (default, x11): leftmost TongueW pixels are the tongue; panel is
+//     x=TongueW..ExpandedW.
+//   - true (wlr): rightmost TongueW pixels are the tongue; panel is
+//     x=0..ExpandedW-TongueW.
 //
 // When s.Expanded is true, the entire buffer is opaque and the label is drawn.
 //
@@ -51,12 +63,19 @@ func DrawTongue(s TongueState, font *truetype.Font) TongueImage {
 	bg := unpackRGBA(s.Color)
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: bg}, image.Point{}, draw.Src)
 
+	// panelRect is the region that becomes transparent when collapsed.
+	var panelRect image.Rectangle
+	if s.TongueRight {
+		panelRect = image.Rect(0, 0, ExpandedW-TongueW, TongueH)
+	} else {
+		panelRect = image.Rect(TongueW, 0, ExpandedW, TongueH)
+	}
+
 	if !s.Expanded {
 		// Clear the panel region to fully transparent so compositors show
 		// the desktop through it — Wayland analogue to the x11 window-slide.
 		transparent := color.RGBA{0, 0, 0, 0}
-		clearRect := image.Rect(TongueW, 0, ExpandedW, TongueH)
-		draw.Draw(img, clearRect, &image.Uniform{C: transparent}, image.Point{}, draw.Src)
+		draw.Draw(img, panelRect, &image.Uniform{C: transparent}, image.Point{}, draw.Src)
 		return TongueImage{RGBA: img}
 	}
 
@@ -65,14 +84,25 @@ func DrawTongue(s TongueState, font *truetype.Font) TongueImage {
 		return out
 	}
 
+	// Text always sits inside the panel. For TongueRight, panel is on the left:
+	// text starts at TextPad and must end before the tongue strip starts.
+	// For !TongueRight, text starts at TextPad past the tongue strip.
 	fg := contrastFG(bg)
-	out.Overflow = drawText(img, font, FontPt, TextPad, TextYBaseline, fg, s.Label)
+	var textX, rightLimit int
+	if s.TongueRight {
+		textX = TextPad
+		rightLimit = ExpandedW - TongueW - textRightPad
+	} else {
+		textX = TextPad
+		rightLimit = ExpandedW - textRightPad
+	}
+	out.Overflow = drawText(img, font, FontPt, textX, TextYBaseline, fg, s.Label, rightLimit)
 	return out
 }
 
 // drawText renders `text` into img using freetype directly. Returns true if
-// the rendered text width exceeded the visible label region (ExpandedW - TextPad - textRightPad).
-func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline int, fg color.Color, text string) (overflow bool) {
+// the rendered text width exceeded rightLimit (pixels from x=0).
+func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline int, fg color.Color, text string, rightLimit int) (overflow bool) {
 	c := freetype.NewContext()
 	c.SetDPI(72)
 	c.SetFont(font)
@@ -90,7 +120,7 @@ func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline
 	// from a true glyph bounding-box right edge by at most one side-bearing.
 	// Close enough for an overflow boolean.
 	textRightPx := int(end.X >> 6)
-	return textRightPx > (ExpandedW - textRightPad)
+	return textRightPx > rightLimit
 }
 
 // unpackRGBA converts a packed 0xRRGGBB to an opaque color.RGBA.

@@ -316,8 +316,9 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		}
 		seen[s.ID] = true
 		st := render.TongueState{
-			Color: colorFor(s),
-			Label: labelFor(s),
+			Color:       colorFor(s),
+			Label:       labelFor(s),
+			TongueRight: true,
 		}
 		if ls, ok := d.surfaces[s.ID]; ok {
 			st.Expanded = ls.state.Expanded // preserve hover state across snapshot updates
