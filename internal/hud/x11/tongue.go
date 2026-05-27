@@ -421,11 +421,15 @@ func (t *tongue) render() {
 	im := xgraphics.New(t.X, rt.RGBA.Bounds())
 	src := rt.RGBA.Pix
 	dst := im.Pix
-	for i := 0; i+3 < len(src) && i+3 < len(dst); i += 4 {
-		dst[i+0] = src[i+2] // B ← src R
-		dst[i+1] = src[i+1] // G ← src G
-		dst[i+2] = src[i+0] // R ← src B
-		dst[i+3] = src[i+3] // A ← src A
+	if len(src) != len(dst) {
+		panic("render: src/dst pixel buffer size mismatch")
+	}
+	// RGBA (image.RGBA) → BGRA (xgraphics.Image), preserving alpha.
+	for i := 0; i < len(src); i += 4 {
+		dst[i+0] = src[i+2] // B
+		dst[i+1] = src[i+1] // G
+		dst[i+2] = src[i+0] // R
+		dst[i+3] = src[i+3] // A
 	}
 
 	im.CreatePixmap()

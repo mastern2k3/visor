@@ -19,11 +19,13 @@ const (
 	// TextYBaseline is the freetype baseline; picked so the cap height sits
 	// centred-ish in TongueH. Empirically matched to the previous x11 layout.
 	TextYBaseline = 24
+
+	textRightPad = 8 // px reserved between text right-edge and panel edge for visual breathing room
 )
 
 // TongueState is the subset of session data the renderer needs.
 type TongueState struct {
-	Color uint32 // 0x00RRGGBB background
+	Color uint32 // 0x00RRGGBB; high byte ignored
 	Label string // already-resolved display label (Title || DisplayCWD || ID[:8])
 }
 
@@ -55,7 +57,7 @@ func DrawTongue(s TongueState, font *truetype.Font) TongueImage {
 }
 
 // drawText renders `text` into img using freetype directly. Returns true if
-// the rendered text width exceeded the visible label region (ExpandedW - TextPad - 8).
+// the rendered text width exceeded the visible label region (ExpandedW - TextPad - textRightPad).
 func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline int, fg color.Color, text string) (overflow bool) {
 	c := freetype.NewContext()
 	c.SetDPI(72)
@@ -70,8 +72,11 @@ func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline
 	if err != nil {
 		return false
 	}
-	textRightPx := int(end.X >> 6) // fixed-point 26.6 → integer pixels
-	return textRightPx > (ExpandedW - 8)
+	// textRightPx is freetype's pen-advance after the final glyph, which differs
+	// from a true glyph bounding-box right edge by at most one side-bearing.
+	// Close enough for an overflow boolean.
+	textRightPx := int(end.X >> 6)
+	return textRightPx > (ExpandedW - textRightPad)
 }
 
 // unpackRGBA converts a packed 0xRRGGBB to an opaque color.RGBA.
@@ -84,7 +89,10 @@ func unpackRGBA(c uint32) color.RGBA {
 	}
 }
 
-// contrastFG picks a near-black or near-white foreground based on bg luminance.
+// contrastFG returns a foreground colour that reads well against bg.
+// Cheap luminance check (Rec. 601 weights): anything bright gets near-black
+// text, anything dark gets near-white. The 140 threshold is empirical —
+// picked to flip at roughly mid-grey, matched to the previous x11 behavior.
 func contrastFG(bg color.RGBA) color.RGBA {
 	lum := (int(bg.R)*299 + int(bg.G)*587 + int(bg.B)*114) / 1000
 	if lum > 140 {
