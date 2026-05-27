@@ -25,8 +25,9 @@ const (
 
 // TongueState is the subset of session data the renderer needs.
 type TongueState struct {
-	Color uint32 // 0x00RRGGBB; high byte ignored
-	Label string // already-resolved display label (Title || DisplayCWD || ID[:8])
+	Color    uint32 // 0x00RRGGBB; high byte ignored
+	Label    string // already-resolved display label (Title || DisplayCWD || ID[:8])
+	Expanded bool   // true = full opaque panel; false = panel region is transparent
 }
 
 // TongueImage is the rendered output plus metadata x11/wlr both need.
@@ -36,15 +37,28 @@ type TongueImage struct {
 }
 
 // DrawTongue produces an ExpandedW-by-TongueH RGBA buffer with a solid
-// background and the label rendered starting at TextPad. The returned image
-// is fully opaque; the caller decides how to display the collapsed-only
-// portion vs the expanded portion.
+// background and the label rendered starting at TextPad.
+//
+// When s.Expanded is false (collapsed), the panel region (x = TongueW..ExpandedW)
+// is cleared to fully transparent RGBA{0,0,0,0} and text rendering is skipped.
+// Only the leftmost TongueW pixels (the tongue strip) remain opaque.
+//
+// When s.Expanded is true, the entire buffer is opaque and the label is drawn.
 //
 // `font` may be nil — in that case the label is skipped and Overflow is false.
 func DrawTongue(s TongueState, font *truetype.Font) TongueImage {
 	img := image.NewRGBA(image.Rect(0, 0, ExpandedW, TongueH))
 	bg := unpackRGBA(s.Color)
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: bg}, image.Point{}, draw.Src)
+
+	if !s.Expanded {
+		// Clear the panel region to fully transparent so compositors show
+		// the desktop through it — Wayland analogue to the x11 window-slide.
+		transparent := color.RGBA{0, 0, 0, 0}
+		clearRect := image.Rect(TongueW, 0, ExpandedW, TongueH)
+		draw.Draw(img, clearRect, &image.Uniform{C: transparent}, image.Point{}, draw.Src)
+		return TongueImage{RGBA: img}
+	}
 
 	out := TongueImage{RGBA: img}
 	if font == nil || s.Label == "" {

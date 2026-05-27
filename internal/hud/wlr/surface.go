@@ -20,9 +20,12 @@ type layerSurface struct {
 	pool    *shmPool
 	log     *slog.Logger
 
-	// State used to (re)paint on configure. For the static smoke-test surface
-	// in Task 4 this is set once and never changed.
+	// State used to (re)paint on configure and pointer events.
 	state render.TongueState
+
+	// sessionID is the daemon session ID used to route IPC commands (ack,
+	// dismiss, jump) from pointer click events.
+	sessionID string
 }
 
 // newLayerSurface creates a wl_surface + zwlr_layer_surface_v1, configures
@@ -30,7 +33,7 @@ type layerSurface struct {
 // and commits with no buffer attached to trigger the first configure event.
 // The compositor calls our configure handler before mapping the surface; we
 // ack there and attach the first frame.
-func newLayerSurface(d *dock, slot int, st render.TongueState) (*layerSurface, error) {
+func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*layerSurface, error) {
 	surf := d.compositor.CreateSurface()
 	ls := d.layerShell.GetLayerSurface(
 		surf,
@@ -48,10 +51,11 @@ func newLayerSurface(d *dock, slot int, st render.TongueState) (*layerSurface, e
 	ls.SetKeyboardInteractivity(protocol.LayerSurfaceV1KeyboardInteractivityNone)
 
 	ps := &layerSurface{
-		surface: surf,
-		ls:      ls,
-		state:   st,
-		log:     d.log,
+		surface:   surf,
+		ls:        ls,
+		state:     st,
+		sessionID: id,
+		log:       d.log,
 	}
 
 	// The configure handler: ack the serial and paint the first frame.

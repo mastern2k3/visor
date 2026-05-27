@@ -48,6 +48,10 @@ type dock struct {
 
 	// surfaces maps session id → layer surface. Driven by daemon snapshots.
 	surfaces map[string]*layerSurface
+
+	// pointer handles wl_pointer events (hover-expand, click-to-act).
+	// Initialised in newDock after globals are bound.
+	pointer *pointer
 }
 
 func newDock() (*dock, error) {
@@ -108,6 +112,11 @@ func newDock() (*dock, error) {
 	}
 
 	d.surfaces = map[string]*layerSurface{}
+
+	// Wire pointer input. newPointer calls seat.GetPointer(), which requires
+	// the seat global to already be bound — safe here because the roundtrip
+	// above has completed.
+	d.pointer = newPointer(d)
 
 	d.log.Info("wayland connected")
 	return d, nil
@@ -313,7 +322,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			// Re-stack: slot may have changed.
 			ls.setSlot(slot)
 		} else {
-			ls, err := newLayerSurface(d, slot, st)
+			ls, err := newLayerSurface(d, slot, s.ID, st)
 			if err != nil {
 				d.log.Warn("create surface", "id", s.ID, "err", err)
 				slot++
@@ -331,6 +340,22 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			delete(d.surfaces, id)
 		}
 	}
+}
+
+// findSurface returns the layerSurface whose underlying wl_surface matches s,
+// or nil if none is found. Used by the pointer input handler to map compositor
+// Enter/Leave events back to the owning session surface.
+//
+// wl.Surface is defined as `type Surface Object`, and Object embeds *objdata.
+// Two Surface values are identical when their *objdata pointers are equal, so
+// the == comparison is correct.
+func (d *dock) findSurface(s wl.Surface) *layerSurface {
+	for _, ls := range d.surfaces {
+		if ls.surface == s {
+			return ls
+		}
+	}
+	return nil
 }
 
 // labelFor mirrors x11.displayLabel: prefer ai-title, then cwd, then id[:8].

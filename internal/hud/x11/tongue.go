@@ -410,8 +410,9 @@ func (t *tongue) render() {
 	}
 
 	rt := render.DrawTongue(render.TongueState{
-		Color: t.opt.color,
-		Label: displayLabel(t.sess),
+		Color:    t.opt.color,
+		Label:    displayLabel(t.sess),
+		Expanded: true, // x11 uses positional window-slide; always render full opaque panel
 	}, t.font)
 	t.overflow = rt.Overflow
 
