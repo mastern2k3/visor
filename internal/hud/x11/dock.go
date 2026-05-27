@@ -1,6 +1,7 @@
 package x11
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -76,8 +77,14 @@ func (d *dock) run() error {
 		d.log.Warn("help tongue create failed", "err", err)
 	}
 
+	// Derive a context that is cancelled when the X event loop shuts down or a
+	// signal arrives. subscribeLoop uses this to exit cleanly without leaking
+	// goroutines or file descriptors.
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+
 	snaps := make(chan []sessionView, 4)
-	go subscribeLoop(snaps, d.log)
+	go subscribeLoop(ctx, snaps, d.log)
 	d.log.Info("subscribed to visor daemon")
 
 	pingBefore, pingAfter, pingQuit := xevent.MainPing(d.X)

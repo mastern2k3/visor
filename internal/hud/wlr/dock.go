@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"codeberg.org/tesselslate/wl"
 	"github.com/BurntSushi/freetype-go/freetype/truetype"
@@ -189,26 +190,34 @@ func (d *dock) close() {
 	for _, s := range d.surfaces {
 		s.destroy()
 	}
-	d.surfaces = map[string]*layerSurface{}
 	if err := d.display.Close(); err != nil {
 		d.log.Debug("display close", "err", err)
 	}
 }
 
+// idlePollInterval caps how long the event loop waits for compositor activity
+// when no snapshot has arrived. At 50 ms the HUD lag is imperceptible to a
+// human; in the idle case the loop ticks at ~20 Hz instead of hot-looping at
+// compositor round-trip rate (~1 ms), saving significant CPU.
+const idlePollInterval = 50 * time.Millisecond
+
 // run pumps the Wayland event loop until ctx is cancelled or a dispatch/flush
 // error occurs.
 //
 // Event-loop pattern: tesselslate/wl only exposes a blocking Dispatch() with
-// no non-blocking variant. To interleave snapshot updates with Wayland events
-// without racing on Wayland objects, we keep ALL Wayland mutations on this
-// single goroutine. We ensure Dispatch() returns promptly by issuing a
-// wl_display.sync before each blocking call; the compositor replies with a
-// wl_callback.done event, which wakes Dispatch(). Snapshot updates are drained
-// after each wakeup, so latency is at most one compositor round-trip (~1 ms on
-// a local socket) rather than being unbounded.
+// no non-blocking variant and does not expose the display fd for edge-triggered
+// I/O. To interleave snapshot updates with Wayland events without racing on
+// Wayland objects, we keep ALL Wayland mutations on this single goroutine.
+//
+// Rate-limiting strategy: when no snapshot arrived in the last iteration we
+// wait up to idlePollInterval before forcing a compositor wakeup via
+// wl_display.sync. A new snapshot cancels the wait early, keeping interactive
+// latency low (~50 ms worst-case) while cutting idle CPU from ~1000 Hz to
+// ~20 Hz. A follow-up could vendor-patch the library to add Display.Fd() and
+// replace this with unix.Poll for true edge-triggered wakeups.
 func (d *dock) run(ctx context.Context) error {
 	snaps := make(chan []sessionView, 4)
-	go subscribeLoop(snaps, d.log)
+	go subscribeLoop(ctx, snaps, d.log)
 
 	// Goroutine that closes the display when ctx is cancelled, which causes
 	// an in-progress Dispatch() to return with an error that we treat as clean
@@ -219,23 +228,38 @@ func (d *dock) run(ctx context.Context) error {
 	}()
 
 	for {
-		// Drain any pending snapshot updates before blocking on Dispatch.
+		// Drain pending snapshots without blocking.
+		drained := false
 		for {
 			select {
 			case snap := <-snaps:
 				d.applySnapshot(snap)
+				drained = true
+				continue
 			default:
-				goto doneSnaps
+			}
+			break
+		}
+
+		if !drained {
+			// Idle path: wait up to idlePollInterval for a snapshot before
+			// forcing a Wayland wakeup. Keeps idle CPU at ~20 Hz instead of
+			// hot-looping at compositor round-trip rate (~1 ms).
+			select {
+			case snap := <-snaps:
+				d.applySnapshot(snap)
+			case <-time.After(idlePollInterval):
+			case <-ctx.Done():
+				return nil
 			}
 		}
-	doneSnaps:
 
-		// Issue a sync so the compositor will send back a wl_callback.done
-		// event, guaranteeing that Dispatch() returns in finite time even when
-		// there is no other compositor activity. This is safe because sync
-		// writes to the write queue which is only touched on this goroutine.
+		// Force Dispatch() to return in bounded time. wl_callback is
+		// auto-destroyed by the dispatch path after Done fires, so no leak.
 		cb := d.display.Sync()
 		cb.SetListener(wl.CallbackListener{
+			// Listener body is intentionally empty — we only need Dispatch()
+			// to return when this callback fires.
 			Done: func(_ any, _ wl.Callback, _ uint32) error { return nil },
 		}, nil)
 
@@ -254,13 +278,28 @@ func (d *dock) run(ctx context.Context) error {
 	}
 }
 
-// applySnapshot diffs the incoming session list against the current surface
-// map and creates/destroys/updates surfaces to match.
+// applySnapshot reconciles the surface map with a new snapshot.
+//
+// snap is iterated in daemon-sort order (needs > ack, then by FirstSeen — see
+// internal/state/notify.go), so slot assignments are stable across calls.
+// Map iteration in the destroy loop is unordered, but destroy is commutative
+// so order doesn't matter.
+//
+// A nil snap (daemon down) destroys all surfaces, clearing the HUD.
+//
+// Dismissed sessions are filtered out and treated as absent, matching x11
+// backend semantics — they stay in the daemon's state but are not shown until
+// their next state transition re-arms attention.
+//
 // applySnapshot must be called from the same goroutine that owns all Wayland
 // objects (the run() goroutine).
 func (d *dock) applySnapshot(snap []sessionView) {
 	seen := map[string]bool{}
-	for i, s := range snap {
+	slot := 0
+	for _, s := range snap {
+		if s.Attention == "dismissed" {
+			continue
+		}
 		seen[s.ID] = true
 		st := render.TongueState{
 			Color: colorFor(s),
@@ -272,15 +311,17 @@ func (d *dock) applySnapshot(snap []sessionView) {
 				ls.repaint(d)
 			}
 			// Re-stack: slot may have changed.
-			ls.setSlot(i)
+			ls.setSlot(slot)
 		} else {
-			ls, err := newLayerSurface(d, i, st)
+			ls, err := newLayerSurface(d, slot, st)
 			if err != nil {
 				d.log.Warn("create surface", "id", s.ID, "err", err)
+				slot++
 				continue
 			}
 			d.surfaces[s.ID] = ls
 		}
+		slot++
 	}
 
 	// Destroy surfaces for sessions no longer present (or nil snapshot = clear all).

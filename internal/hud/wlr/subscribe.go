@@ -2,6 +2,7 @@ package wlr
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -26,19 +27,23 @@ type sessionView struct {
 
 // subscribeLoop keeps a subscription alive across daemon restarts. When the
 // connection drops it pushes an empty snapshot (so stale tongues clear) and
-// reconnects with capped exponential backoff. It never returns — the dock's
-// event loop owns shutdown via signal / X-quit, not the subscription.
-func subscribeLoop(out chan<- []sessionView, log *slog.Logger) {
+// reconnects with capped exponential backoff. Returns when ctx is cancelled,
+// preventing goroutine and FD leaks on shutdown.
+func subscribeLoop(ctx context.Context, out chan<- []sessionView, log *slog.Logger) {
 	const (
 		minBackoff = 200 * time.Millisecond
 		maxBackoff = 2 * time.Second
 	)
 	backoff := minBackoff
 	for {
-		connected, err := subscribe(out)
+		connected, err := subscribe(ctx, out)
 		// Connection ended (daemon died, restarted, or never came up). Clear
 		// the dock so it doesn't show sessions from the dead daemon.
-		out <- nil
+		select {
+		case out <- nil:
+		case <-ctx.Done():
+			return
+		}
 		if connected {
 			// We reached a live subscription; the daemon was up. Recover
 			// quickly when it comes back rather than carrying stale backoff.
@@ -46,7 +51,11 @@ func subscribeLoop(out chan<- []sessionView, log *slog.Logger) {
 		} else {
 			log.Debug("daemon unreachable; retrying", "err", err, "backoff", backoff)
 		}
-		time.Sleep(backoff)
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return
+		}
 		if !connected && backoff < maxBackoff {
 			backoff *= 2
 			if backoff > maxBackoff {
@@ -60,7 +69,8 @@ func subscribeLoop(out chan<- []sessionView, log *slog.Logger) {
 // every snapshot it receives on `out`. The bool reports whether a live
 // subscription was reached (ack line received) before the connection ended —
 // the caller uses it to distinguish "daemon down" from "daemon restarted".
-func subscribe(out chan<- []sessionView) (connected bool, err error) {
+// Returns (true, nil) on clean shutdown via ctx cancellation.
+func subscribe(ctx context.Context, out chan<- []sessionView) (connected bool, err error) {
 	c, err := net.Dial("unix", paths.Socket())
 	if err != nil {
 		return false, fmt.Errorf("dial visor socket: %w (is the daemon running?)", err)
@@ -85,7 +95,11 @@ func subscribe(out chan<- []sessionView) (connected bool, err error) {
 		if len(line) > 0 {
 			var snap []sessionView
 			if jerr := json.Unmarshal(line, &snap); jerr == nil {
-				out <- snap
+				select {
+				case out <- snap:
+				case <-ctx.Done():
+					return true, nil
+				}
 			}
 		}
 		if err != nil {

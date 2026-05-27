@@ -101,8 +101,9 @@ func (s *layerSurface) repaint(d *dock) {
 	s.surface.Commit()
 }
 
-// setSlot updates the vertical position of this surface within the dock by
-// re-issuing set_margin (top margin = slot * TongueH) and committing.
+// setSlot updates the surface's vertical position. Each surface commits
+// independently — wl_surface.commit is per-surface by protocol; there is no
+// batch primitive at this layer.
 // Must be called from the Wayland dispatch goroutine.
 func (s *layerSurface) setSlot(slot int) {
 	s.ls.SetMargin(int32(slot*render.TongueH), 0, 0, 0)
