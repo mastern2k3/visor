@@ -26,6 +26,11 @@ type shmPool struct {
 	fd   int
 
 	buffers [2]*Buffer
+
+	// onRelease is called from each buffer's Release listener when the
+	// compositor returns a buffer. May be nil. Used by layerSurface to retry
+	// a repaint that was dropped because both buffers were in-flight.
+	onRelease func()
 }
 
 // Buffer is one half of the double-buffered pool. Pix is the writable slice
@@ -72,9 +77,13 @@ func newShmPool(shm *wl.Shm) (*shmPool, error) {
 			released: true,
 		}
 		// Mark released when the compositor finishes with the buffer.
+		// Fire onRelease so a surface that set dirty=true can retry.
 		buf.Wl.SetListener(wl.BufferListener{
 			Release: func(_ any, _ wl.Buffer) error {
 				buf.released = true
+				if p.onRelease != nil {
+					p.onRelease()
+				}
 				return nil
 			},
 		}, nil)

@@ -22,6 +22,10 @@ var fontCandidates = []string{
 	"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
 }
 
+// FontCandidates returns the ordered list of font paths that LoadFont tries.
+// Exposed so callers can include it in diagnostic log messages.
+func FontCandidates() []string { return fontCandidates }
+
 // LoadFont returns the first system-installed mono TTF that parses.
 // Returns an error if none of the candidate paths are readable.
 func LoadFont() (*truetype.Font, error) {

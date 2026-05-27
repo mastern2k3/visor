@@ -107,8 +107,14 @@ func newDock() (*dock, error) {
 	}
 
 	// Load font; failure is non-fatal — tongues show background colour only.
+	// This is the most likely reason for missing text: install a font from the
+	// candidate list (DejaVuSansMono, LiberationMono, or NotoSansMono) or
+	// point one of the candidate paths at a valid TTF.
 	if f, err := render.LoadFont(); err != nil {
-		d.log.Warn("font load failed; tongues will be blank", "err", err)
+		d.log.Warn("font load failed; tongues will show background colour only — install DejaVuSansMono, LiberationMono, or NotoSansMono",
+			"err", err,
+			"tried", render.FontCandidates(),
+		)
 	} else {
 		d.font = f
 	}

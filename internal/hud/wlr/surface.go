@@ -29,6 +29,16 @@ type layerSurface struct {
 	// sessionID is the daemon session ID used to route IPC commands (ack,
 	// dismiss, jump) from pointer click events.
 	sessionID string
+
+	// dirty is true when a state change happened but the most recent repaint
+	// couldn't acquire a buffer (both were in-flight). The next wl_buffer.release
+	// event will retry the repaint via the pool's onRelease callback.
+	// Only touched on the Wayland dispatch goroutine.
+	dirty bool
+
+	// d is a back-pointer to the dock, needed so the pool's onRelease callback
+	// can call repaint without an extra closure argument.
+	d *dock
 }
 
 // newLayerSurface creates a wl_surface + zwlr_layer_surface_v1, configures
@@ -59,6 +69,7 @@ func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*laye
 		state:     st,
 		sessionID: id,
 		log:       d.log,
+		d:         d,
 	}
 
 	// The configure handler: ack the serial and paint the first frame.
@@ -89,16 +100,27 @@ func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*laye
 	}
 	ps.pool = pool
 
+	// Wire retry-on-release. When a buffer is returned by the compositor,
+	// if ps has a pending dirty repaint, retry it now.
+	pool.onRelease = func() {
+		if ps.dirty {
+			ps.repaint(ps.d)
+		}
+	}
+
 	return ps, nil
 }
 
 // repaint acquires a buffer, renders the current state via render.DrawTongue,
 // attaches it, damages the full surface, and commits.  A nil Acquire means
-// both buffers are still in-flight; we silently drop the frame.
+// both buffers are still in-flight; we mark dirty=true so the next
+// wl_buffer.release event retries via pool.onRelease.
 func (s *layerSurface) repaint(d *dock) {
 	buf := s.pool.Acquire()
 	if buf == nil {
-		d.log.Debug("both shm buffers in-flight; dropping frame")
+		s.dirty = true
+		d.log.Debug("both shm buffers in-flight; will retry on release",
+			"session", s.sessionID, "expanded", s.state.Expanded)
 		return
 	}
 	img := render.DrawTongue(s.state, d.font)
@@ -106,6 +128,7 @@ func (s *layerSurface) repaint(d *dock) {
 	s.surface.Attach(buf.Wl, 0, 0)
 	s.surface.Damage(0, 0, int32(render.ExpandedW), int32(render.TongueH))
 	s.surface.Commit()
+	s.dirty = false
 }
 
 // setSlot updates the surface's vertical position. Each surface commits
