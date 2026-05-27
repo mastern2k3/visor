@@ -37,7 +37,7 @@ func TestDrawTongue_OverflowOnLongLabel(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		long += "x"
 	}
-	img := DrawTongue(TongueState{Color: 0x445566, Label: long}, font)
+	img := DrawTongue(TongueState{Color: 0x445566, Label: long, Expanded: true}, font)
 	if !img.Overflow {
 		t.Errorf("overflow=false for 200-char label; want true")
 	}
