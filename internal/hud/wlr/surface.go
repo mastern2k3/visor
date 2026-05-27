@@ -18,9 +18,7 @@ type layerSurface struct {
 	surface wl.Surface
 	ls      protocol.LayerSurfaceV1
 	pool    *shmPool
-
-	// Last size acked from a configure event. Zero until first configure.
-	width, height int32
+	log     *slog.Logger
 
 	// State used to (re)paint on configure. For the static smoke-test surface
 	// in Task 4 this is set once and never changed.
@@ -53,6 +51,7 @@ func newLayerSurface(d *dock, slot int, st render.TongueState) (*layerSurface, e
 		surface: surf,
 		ls:      ls,
 		state:   st,
+		log:     d.log,
 	}
 
 	// The configure handler: ack the serial and paint the first frame.
@@ -60,8 +59,6 @@ func newLayerSurface(d *dock, slot int, st render.TongueState) (*layerSurface, e
 	ls.SetListener(protocol.LayerSurfaceV1Listener{
 		Configure: func(_ any, _ protocol.LayerSurfaceV1, serial uint32, w uint32, h uint32) error {
 			ps.ls.AckConfigure(serial)
-			ps.width = int32(w)
-			ps.height = int32(h)
 			ps.repaint(d)
 			return nil
 		},
@@ -115,5 +112,5 @@ func (s *layerSurface) destroy() {
 	// Destroy layer_surface before wl_surface (protocol requirement).
 	s.ls.Destroy()
 	s.surface.Destroy()
-	slog.Debug("layerSurface destroyed")
+	s.log.Debug("layerSurface destroyed")
 }

@@ -9,9 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/jezek/xgb v1.3.1
 	github.com/jezek/xgbutil v0.0.0-20260124183602-9fd151d6a51a
+	golang.org/x/sys v0.25.0
 )
 
-require (
-	github.com/BurntSushi/graphics-go v0.0.0-20160129215708-b43f31a4a966 // indirect
-	golang.org/x/sys v0.25.0 // indirect
-)
+require github.com/BurntSushi/graphics-go v0.0.0-20160129215708-b43f31a4a966 // indirect

@@ -30,10 +30,16 @@ type shmPool struct {
 
 // Buffer is one half of the double-buffered pool. Pix is the writable slice
 // the renderer fills; Wl is the wl_buffer handed to the compositor.
+//
+// released is read in Acquire() and written by the wl_buffer.release
+// listener. Both callers run on the single Wayland dispatch goroutine
+// (display.Dispatch in dock.run), so no synchronization is needed.
+// If Acquire is ever called from a different goroutine, this must
+// become atomic or guarded by a mutex.
 type Buffer struct {
 	Wl       wl.Buffer
-	Pix      []byte // length == bufSize
-	released bool   // true if compositor has released the buffer
+	Pix      []byte // length == bufSize; three-index slice keeps cap bounded to this buffer's region
+	released bool
 }
 
 func newShmPool(shm *wl.Shm) (*shmPool, error) {
@@ -57,11 +63,12 @@ func newShmPool(shm *wl.Shm) (*shmPool, error) {
 	p := &shmPool{pool: pool, mmap: mmap, fd: fd}
 
 	for i := 0; i < 2; i++ {
-		off := int32(i * bufSize)
-		wb := p.pool.CreateBuffer(off, int32(bufW), int32(bufH), int32(bufStri), wl.ShmFormatArgb8888)
+		off := i * bufSize
+		end := off + bufSize
+		wb := p.pool.CreateBuffer(int32(off), int32(bufW), int32(bufH), int32(bufStri), wl.ShmFormatArgb8888)
 		buf := &Buffer{
 			Wl:       wb,
-			Pix:      mmap[off : int(off)+bufSize],
+			Pix:      mmap[off:end:end], // three-index: cap bounded to this buffer's region
 			released: true,
 		}
 		// Mark released when the compositor finishes with the buffer.
@@ -89,11 +96,19 @@ func (p *shmPool) Acquire() *Buffer {
 }
 
 func (p *shmPool) close() {
+	for _, b := range p.buffers {
+		if b != nil {
+			b.Wl.Destroy()
+		}
+	}
+	p.pool.Destroy()
 	if p.mmap != nil {
 		_ = syscall.Munmap(p.mmap)
+		p.mmap = nil
 	}
-	if p.fd > 0 {
+	if p.fd >= 0 {
 		_ = syscall.Close(p.fd)
+		p.fd = -1
 	}
 }
 
@@ -103,8 +118,12 @@ func (p *shmPool) close() {
 func (b *Buffer) CopyRGBA(img *image.RGBA) {
 	src := img.Pix
 	dst := b.Pix
-	// RGBA → BGRA byte swap; alpha preserved.
-	for i := 0; i+3 < len(src) && i+3 < len(dst); i += 4 {
+	if len(src) != len(dst) {
+		// Renderer produced a buffer of unexpected size — refuse rather than
+		// silently truncate.
+		panic(fmt.Sprintf("wlr: render produced %d bytes, expected %d", len(src), len(dst)))
+	}
+	for i := 0; i < len(src); i += 4 {
 		dst[i+0] = src[i+2] // B
 		dst[i+1] = src[i+1] // G
 		dst[i+2] = src[i+0] // R
