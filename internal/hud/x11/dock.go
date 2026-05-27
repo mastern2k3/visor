@@ -11,6 +11,8 @@ import (
 	"github.com/jezek/xgb/xproto"
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/xevent"
+
+	"github.com/nitzanz/visor/internal/hud/render"
 )
 
 // dock owns the X connection and manages a map of tongue windows keyed
@@ -44,7 +46,7 @@ func newDock() (*dock, error) {
 		log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		tongues: map[string]*tongue{},
 	}
-	if f, ferr := loadFont(); ferr != nil {
+	if f, ferr := render.LoadFont(); ferr != nil {
 		d.log.Warn("font load failed; expanded tongues will be blank", "err", ferr)
 	} else {
 		d.font = f

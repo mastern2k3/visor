@@ -16,6 +16,7 @@ import (
 	"github.com/jezek/xgbutil/xgraphics"
 	"github.com/jezek/xgbutil/xwindow"
 
+	"github.com/nitzanz/visor/internal/hud/render"
 	"github.com/nitzanz/visor/internal/ipc"
 	"github.com/nitzanz/visor/internal/paths"
 )
@@ -34,11 +35,11 @@ import (
 //   tongueW .. textPad  : padding gap between tongue and text
 //   textPad .. expandedW: cwd text
 const (
-	tongueW   = 10  // visible width when collapsed
-	tongueH   = 36  // taller — easier to hover/click, more vertical breathing room
-	expandedW = 300 // wider panel for legible titles
-	textPad   = 18  // window-x where text starts
-	fontPt    = 13.5
+	tongueW   = render.TongueW
+	tongueH   = render.TongueH
+	expandedW = render.ExpandedW
+	textPad   = render.TextPad
+	fontPt    = render.FontPt
 )
 
 // Wobble animation for "working" tongues. We oscillate leftward (never
@@ -408,24 +409,23 @@ func (t *tongue) render() {
 		t.expandedImg = nil
 	}
 
-	im := xgraphics.New(t.X, image.Rect(0, 0, expandedW, tongueH))
-	bg := rgba(t.opt.color)
-	for y := 0; y < tongueH; y++ {
-		for x := 0; x < expandedW; x++ {
-			im.Set(x, y, bg)
-		}
-	}
+	rt := render.DrawTongue(render.TongueState{
+		Color: t.opt.color,
+		Label: displayLabel(t.sess),
+	}, t.font)
+	t.overflow = rt.Overflow
 
-	if t.font != nil {
-		fg := contrastFG(bg)
-		text := displayLabel(t.sess)
-		// textPad gives the leftmost tongueW pixels a clean uninterrupted
-		// strip of bg colour — that's the "tongue" the user sees when collapsed.
-		// y baseline picked so the cap height sits roughly centred in tongueH.
-		_, _, _ = im.Text(textPad, 9, fg, fontPt, t.font, text)
-		// Detect overflow now so we know whether to surface a tooltip on hover.
-		textW, _ := xgraphics.Extents(t.font, fontPt, text)
-		t.overflow = textW > (expandedW - textPad - 8)
+	// Wrap the RGBA into an xgraphics.Image for X upload. xgraphics.Image
+	// stores pixels in BGRA order, so we must swap R and B channels rather
+	// than doing a raw copy.
+	im := xgraphics.New(t.X, rt.RGBA.Bounds())
+	src := rt.RGBA.Pix
+	dst := im.Pix
+	for i := 0; i+3 < len(src) && i+3 < len(dst); i += 4 {
+		dst[i+0] = src[i+2] // B ← src R
+		dst[i+1] = src[i+1] // G ← src G
+		dst[i+2] = src[i+0] // R ← src B
+		dst[i+3] = src[i+3] // A ← src A
 	}
 
 	im.CreatePixmap()
@@ -451,6 +451,7 @@ func displayLabel(s sessionView) string {
 }
 
 // rgba converts a packed 0xRRGGBB to a color.RGBA (opaque).
+// Used by the tooltip drawing code in showTooltip.
 func rgba(c uint32) color.RGBA {
 	return color.RGBA{
 		R: uint8((c >> 16) & 0xff),
@@ -458,15 +459,4 @@ func rgba(c uint32) color.RGBA {
 		B: uint8(c & 0xff),
 		A: 0xff,
 	}
-}
-
-// contrastFG returns a foreground colour that reads well against bg.
-// Cheap luminance check; anything bright gets near-black text, anything
-// dark gets near-white. Saves us from defining per-state fg colours.
-func contrastFG(bg color.RGBA) color.RGBA {
-	lum := (int(bg.R)*299 + int(bg.G)*587 + int(bg.B)*114) / 1000
-	if lum > 140 {
-		return color.RGBA{0x10, 0x14, 0x1c, 0xff}
-	}
-	return color.RGBA{0xe5, 0xe9, 0xf0, 0xff}
 }
