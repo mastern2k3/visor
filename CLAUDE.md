@@ -25,7 +25,7 @@ go build -o bin/visor ./cmd/visor
 ./bin/visor ctl watch               # long-lived stream (used by the HUD)
 ./bin/visor ctl dismiss <id>
 ./bin/visor ctl ack <id>
-./bin/visor ctl jump <id>           # stub today; task 8 wires the focus dispatcher
+./bin/visor ctl jump <id>           # warps focus via internal/focus (X11 + tmux)
 
 # HUD — picks a backend with --backend=eww (default) or --backend=x11
 ./bin/visor hud install
@@ -63,7 +63,11 @@ The daemon listens on `$VISOR_SOCK` or `$XDG_RUNTIME_DIR/visor.sock`. Reads tran
 
 **IPC.** `internal/ipc` — one JSON request per line over a Unix socket, one response back. A `Response.Stream` channel switches the server into long-lived line-streaming mode (used by `watch`). `ipc.Call` is one-shot; the `watch` ctl handler dials directly to keep the connection open.
 
-**HUD backends.** `internal/hud/hud.go` defines a minimal `Backend` interface (`Name / Install / Open / Close`). Today: `eww` (yuck config that consumes `visor ctl watch` via `deflisten`) and `x11` (pure-Go native dock via `jezek/xgb` + `xgbutil` — one override-redirect window per session, EWMH dock/sticky/above hints, no transparent regions so clicks between tongues hit the desktop). `cmd/visor/hud.go::pickBackend` is the registry — add a new package under `internal/hud/<name>/`, implement Backend, and add a case. Do not widen the interface until at least two backends need a new method.
+**HUD backends.** `internal/hud/hud.go` defines a minimal `Backend` interface (`Name / Install / Open / Close`). Today: `eww` (yuck config that consumes `visor ctl watch` via `deflisten`) and `x11` (pure-Go native dock via `jezek/xgb` + `xgbutil` — one override-redirect window per session, EWMH dock/sticky/above hints, no transparent regions so clicks between tongues hit the desktop; text rendering via `freetype-go` + `xgraphics`, see `internal/hud/x11/font.go` for the font-discovery fallback list). `cmd/visor/hud.go::pickBackend` is the registry — add a new package under `internal/hud/<name>/`, implement Backend, and add a case. Do not widen the interface until at least two backends need a new method.
+
+**Tongue clicks (x11 backend).** Left = `jump` (focus dispatch), middle = `dismiss`, right = `ack`. See `internal/hud/x11/tongue.go::onButton`.
+
+**Focus dispatch.** `internal/focus` warps the user back to a session. Two best-effort steps run in order: (1) EWMH `_NET_ACTIVE_WINDOW` ClientMessage to the captured X11 `WindowID`, (2) tmux `select-window` / `select-pane` against the captured `TmuxPane`. Either step is skipped if its locator wasn't captured at SessionStart. The daemon's `jump` IPC handler in `cmd/visor/daemon.go` builds the `focus.Target` from the session and calls `focus.Dispatch`. Wayland-native focus (Niri, sway, hyprland) is not yet wired — currently relies on the X11 path working under XWayland or the WM honoring EWMH.
 
 ## Things that will bite you
 
@@ -82,6 +86,5 @@ The daemon listens on `$VISOR_SOCK` or `$XDG_RUNTIME_DIR/visor.sock`. Reads tran
 
 ## Pending / known WIP
 
-- Focus dispatcher (`internal/focus`) is not yet implemented. `visor ctl jump` is a stub in the daemon; left-clicking a tongue in the HUD acks but doesn't warp focus. Niri is the priority WM (the user's eventual target); fallback adapters needed for sway / hyprland / x11 / tmux. PID/WM/window-id are already captured in SessionStart and present on `Session`.
-- The x11 backend has no text rendering yet — hovering a tongue resizes the window leftward to `expandedW` (240 px) but the panel is blank. Real font rendering needs XRender + a font lib or Cairo, queued as a separate task.
-- No Wayland backend. The `Backend` interface is the seam for adding one (`internal/hud/wlr`) when needed.
+- Focus dispatch covers X11 (EWMH) + tmux. Niri / sway / hyprland native focus protocols are not yet wired — under those compositors, jump relies on XWayland or the WM honoring EWMH. Add per-WM adapters in `internal/focus/` when needed; the `WM` field on `focus.Target` is the dispatch key.
+- No Wayland backend yet. Design draft lives at `docs/superpowers/specs/2026-05-27-wayland-backend-design.md` (target package `internal/hud/wlr`, pure-Go via `codeberg.org/tesselslate/wl`, no cgo). The `Backend` interface is the seam.
