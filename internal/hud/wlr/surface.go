@@ -39,6 +39,16 @@ type layerSurface struct {
 	// d is a back-pointer to the dock, needed so the pool's onRelease callback
 	// can call repaint without an extra closure argument.
 	d *dock
+
+	// Input regions: the surface is ExpandedW wide but most of it is
+	// transparent when collapsed. Without an input region the compositor would
+	// fire pointer Enter when the cursor crossed the invisible panel area,
+	// expanding the tongue before the cursor reached the visible strip.
+	//   regionTongue: rightmost TongueW px only (active while collapsed).
+	//   regionFull:   entire surface (active while expanded, so the cursor
+	//                 can move onto the panel without firing Leave).
+	regionTongue wl.Region
+	regionFull   wl.Region
 }
 
 // newLayerSurface creates a wl_surface + zwlr_layer_surface_v1, configures
@@ -63,14 +73,26 @@ func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*laye
 	ls.SetMargin(int32(slot*(render.TongueH+tongueGap)), 0, 0, 0) // top, right, bottom, left
 	ls.SetKeyboardInteractivity(protocol.LayerSurfaceV1KeyboardInteractivityNone)
 
+	// Pre-build the two input regions used to gate pointer Enter/Leave.
+	regionTongue := d.compositor.CreateRegion()
+	regionTongue.Add(int32(render.ExpandedW-render.TongueW), 0, int32(render.TongueW), int32(render.TongueH))
+	regionFull := d.compositor.CreateRegion()
+	regionFull.Add(0, 0, int32(render.ExpandedW), int32(render.TongueH))
+
 	ps := &layerSurface{
-		surface:   surf,
-		ls:        ls,
-		state:     st,
-		sessionID: id,
-		log:       d.log,
-		d:         d,
+		surface:      surf,
+		ls:           ls,
+		state:        st,
+		sessionID:    id,
+		log:          d.log,
+		d:            d,
+		regionTongue: regionTongue,
+		regionFull:   regionFull,
 	}
+
+	// Start with the tongue-only input region — newly-created surfaces are
+	// always collapsed.
+	surf.SetInputRegion(regionTongue)
 
 	// The configure handler: ack the serial and paint the first frame.
 	// Subsequent configure events (e.g. output scale changes) also repaint.
@@ -127,6 +149,13 @@ func (s *layerSurface) repaint(d *dock) {
 	buf.CopyRGBA(img.RGBA)
 	s.surface.Attach(buf.Wl, 0, 0)
 	s.surface.Damage(0, 0, int32(render.ExpandedW), int32(render.TongueH))
+	// Match input region to visible area: tongue strip only when collapsed,
+	// full surface when expanded so the cursor can drift onto the panel.
+	if s.state.Expanded {
+		s.surface.SetInputRegion(s.regionFull)
+	} else {
+		s.surface.SetInputRegion(s.regionTongue)
+	}
 	s.surface.Commit()
 	s.dirty = false
 }
@@ -148,6 +177,8 @@ func (s *layerSurface) destroy() {
 		s.pool.close()
 		s.pool = nil
 	}
+	s.regionTongue.Destroy()
+	s.regionFull.Destroy()
 	// Destroy layer_surface before wl_surface (protocol requirement).
 	s.ls.Destroy()
 	s.surface.Destroy()
