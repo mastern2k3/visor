@@ -1,7 +1,7 @@
 ;; Visor HUD — Claude Code attention dock.
 ;;
-;; A vertical strip of "tongues" anchored to the right edge of the screen.
-;; Each tongue is one Claude session: narrow by default, hover to expand
+;; A vertical strip of "tabs" anchored to the right edge of the screen.
+;; Each tab is one Claude session: narrow by default, hover to expand
 ;; leftward and reveal full details (cwd, id, jump/dismiss actions).
 ;; Color = session state.
 ;;
@@ -15,18 +15,18 @@
 (deflisten sessions :initial "[]" "visor ctl watch")
 
 ;; ----------------------------------------------------------------------
-;; One tongue per session.
+;; One tab per session.
 ;;
 ;; The narrow visible bar is always rendered; the wider details panel is
 ;; inside a (revealer) that opens whenever the session needs attention,
 ;; and CSS expands on :hover for ack/dismissed sessions too.
 ;; ----------------------------------------------------------------------
 
-;; Per-session row: narrow tongue on the right, hover expands a panel
+;; Per-session row: narrow tab on the right, hover expands a panel
 ;; leftward. Container has alpha-0 background so GTK's X11 input shape
-;; makes empty space click-through; only the opaque tongue/panel block.
-(defwidget tongue [s]
-  (eventbox :class {"visor-tongue visor-attn-${s.attention} visor-act-${s.activity} visor-wait-${s.waiting}"}
+;; makes empty space click-through; only the opaque tab/panel block.
+(defwidget tab [s]
+  (eventbox :class {"visor-tab visor-attn-${s.attention} visor-act-${s.activity} visor-wait-${s.waiting}"}
             :tooltip {s.display_cwd != "" ? s.display_cwd : s.id}
     (box :orientation "h"
          :space-evenly false
@@ -64,11 +64,11 @@
        :valign "center"
        :halign "end"
     (for s in {sessions}
-      (tongue :s s))))
+      (tab :s s))))
 
 ;; Wide window with transparent (alpha-0) container regions. GTK on X11
 ;; auto-applies the X11 Shape extension from the alpha channel: alpha-0
-;; pixels become click-through; opaque pixels (the tongues / panels)
+;; pixels become click-through; opaque pixels (the tabs / panels)
 ;; block clicks. :wm-ignore must stay false for this to work.
 (defwindow visor
   :monitor 0

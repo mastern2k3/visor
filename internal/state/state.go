@@ -370,7 +370,7 @@ func (s *Store) Snapshot() []Snapshot {
 	defer s.mu.RUnlock()
 	out := make([]Snapshot, 0, len(s.sessions))
 	// Stable order matters: the HUD polls this every second; map iteration
-	// is randomized in Go, so an unsorted slice makes tongues swap positions
+	// is randomized in Go, so an unsorted slice makes tabs swap positions
 	// on every refresh.
 	for _, sess := range s.sessions {
 		out = append(out, Snapshot{

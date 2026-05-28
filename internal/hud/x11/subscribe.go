@@ -26,7 +26,7 @@ type sessionView struct {
 }
 
 // subscribeLoop keeps a subscription alive across daemon restarts. When the
-// connection drops it pushes an empty snapshot (so stale tongues clear) and
+// connection drops it pushes an empty snapshot (so stale tabs clear) and
 // reconnects with capped exponential backoff. Returns when ctx is cancelled,
 // preventing goroutine and FD leaks on shutdown.
 func subscribeLoop(ctx context.Context, out chan<- []sessionView, log *slog.Logger) {

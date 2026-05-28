@@ -42,7 +42,7 @@ type dock struct {
 	// Which globals were observed during initial roundtrip.
 	hasCompositor, hasShm, hasSeat, hasOutput, hasLayerShell bool
 
-	// Font used by layerSurface.repaint. Nil if font load failed (tongues
+	// Font used by layerSurface.repaint. Nil if font load failed (tabs
 	// will show background colour only, without text labels).
 	font *truetype.Font
 
@@ -106,12 +106,12 @@ func newDock() (*dock, error) {
 		return nil, fmt.Errorf("no wl_output advertised by compositor")
 	}
 
-	// Load font; failure is non-fatal — tongues show background colour only.
+	// Load font; failure is non-fatal — tabs show background colour only.
 	// This is the most likely reason for missing text: install a font from the
 	// candidate list (DejaVuSansMono, LiberationMono, or NotoSansMono) or
 	// point one of the candidate paths at a valid TTF.
 	if f, err := render.LoadFont(); err != nil {
-		d.log.Warn("font load failed; tongues will show background colour only — install DejaVuSansMono, LiberationMono, or NotoSansMono",
+		d.log.Warn("font load failed; tabs will show background colour only — install DejaVuSansMono, LiberationMono, or NotoSansMono",
 			"err", err,
 			"tried", render.FontCandidates(),
 		)
@@ -274,7 +274,7 @@ func (d *dock) run(ctx context.Context) error {
 			}
 		}
 
-		// Animation tick: working tongues wobble, needs tongues protrude.
+		// Animation tick: working tabs wobble, needs tabs protrude.
 		// Each surface decides whether its margin actually changed and only
 		// commits when it did.
 		now := time.Now()
@@ -329,10 +329,10 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			continue
 		}
 		seen[s.ID] = true
-		st := render.TongueState{
+		st := render.TabState{
 			Color:       colorFor(s),
 			Label:       labelFor(s),
-			TongueRight: true,
+			TabRight: true,
 		}
 		if ls, ok := d.surfaces[s.ID]; ok {
 			st.Expanded = ls.state.Expanded // preserve hover state across snapshot updates
@@ -399,7 +399,7 @@ func labelFor(s sessionView) string {
 	return s.ID
 }
 
-// colorFor maps session state to the canonical 0x00RRGGBB tongue colour,
+// colorFor maps session state to the canonical 0x00RRGGBB tab colour,
 // delegating to render.ColorFor so all backends share the same scheme.
 func colorFor(s sessionView) uint32 {
 	return render.ColorFor(s.Activity, s.Attention, s.Waiting)

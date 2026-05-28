@@ -14,34 +14,34 @@ import (
 )
 
 const (
-	// tongueGap is the vertical space in pixels between adjacent tongues.
-	tongueGap = 4
+	// tabGap is the vertical space in pixels between adjacent tabs.
+	tabGap = 4
 
 	// topOffset shifts the whole dock down from the top of the screen so it
 	// doesn't sit under a top bar or overlap chrome the user wants to see.
 	topOffset = 256
 
-	// Wobble animation for "working" tongues — they breathe leftward (toward
-	// the centre of the screen) with cosine easing. Each tongue gets a
-	// randomized phase so adjacent tongues don't pulse in lockstep.
+	// Wobble animation for "working" tabs — they breathe leftward (toward
+	// the centre of the screen) with cosine easing. Each tab gets a
+	// randomized phase so adjacent tabs don't pulse in lockstep.
 	wobbleAmp    = 4.0
 	wobblePeriod = 0.9 // seconds for one full cycle
 
 	// alertProtrusion: a session with attention=needs sits this many pixels
 	// further from the right edge so it's distinguishable by shape alone, not
-	// just colour. Chosen > wobbleAmp so a needs tongue is unambiguously
-	// further out than any working tongue at its wobble peak.
+	// just colour. Chosen > wobbleAmp so a needs tab is unambiguously
+	// further out than any working tab at its wobble peak.
 	alertProtrusion = 8
 
-	// tongueOverflow is how many pixels the surface extends past the screen's
+	// tabOverflow is how many pixels the surface extends past the screen's
 	// right edge at the rest position. Chosen as alertProtrusion + wobbleAmp
 	// so that even at peak shift (alert + wobble) the buffer's right edge is
 	// still flush with or beyond the screen edge — wobble/alert always grow
-	// the visible tongue leftward instead of revealing empty space.
-	tongueOverflow = int(alertProtrusion) + int(wobbleAmp)
+	// the visible tab leftward instead of revealing empty space.
+	tabOverflow = int(alertProtrusion) + int(wobbleAmp)
 )
 
-// layerSurface is one tongue: a wl_surface + zwlr_layer_surface_v1 pair plus
+// layerSurface is one tab: a wl_surface + zwlr_layer_surface_v1 pair plus
 // the shm pool that backs its frames.
 //
 // The static test surface is removed in Task 5.
@@ -52,14 +52,14 @@ type layerSurface struct {
 	log     *slog.Logger
 
 	// State used to (re)paint on configure and pointer events.
-	state render.TongueState
+	state render.TabState
 
 	// sessionID is the daemon session ID used to route IPC commands (ack,
 	// dismiss, jump) from pointer click events.
 	sessionID string
 
 	// Raw daemon state needed to drive animation. Kept alongside the rendered
-	// TongueState so the renderer stays pure.
+	// TabState so the renderer stays pure.
 	activity  string
 	attention string
 
@@ -83,11 +83,11 @@ type layerSurface struct {
 	// Input regions: the surface is ExpandedW wide but most of it is
 	// transparent when collapsed. Without an input region the compositor would
 	// fire pointer Enter when the cursor crossed the invisible panel area,
-	// expanding the tongue before the cursor reached the visible strip.
-	//   regionTongue: rightmost TongueW px only (active while collapsed).
+	// expanding the tab before the cursor reached the visible strip.
+	//   regionTab: rightmost TabW px only (active while collapsed).
 	//   regionFull:   entire surface (active while expanded, so the cursor
 	//                 can move onto the panel without firing Leave).
-	regionTongue wl.Region
+	regionTab wl.Region
 	regionFull   wl.Region
 }
 
@@ -96,36 +96,36 @@ type layerSurface struct {
 // and commits with no buffer attached to trigger the first configure event.
 // The compositor calls our configure handler before mapping the surface; we
 // ack there and attach the first frame.
-func newLayerSurface(d *dock, slot int, id, activity, attention string, st render.TongueState) (*layerSurface, error) {
+func newLayerSurface(d *dock, slot int, id, activity, attention string, st render.TabState) (*layerSurface, error) {
 	surf := d.compositor.CreateSurface()
 	ls := d.layerShell.GetLayerSurface(
 		surf,
 		d.output,
 		protocol.LayerShellV1LayerOverlay,
-		"visor-tongue",
+		"visor-tab",
 	)
 
-	// Anchor to the top-right corner; margin_top stacks tongues vertically.
+	// Anchor to the top-right corner; margin_top stacks tabs vertically.
 	// ExclusiveZone -1: float above all reserved struts, don't push others.
 	ls.SetAnchor(protocol.LayerSurfaceV1AnchorTop | protocol.LayerSurfaceV1AnchorRight)
-	ls.SetSize(uint32(render.ExpandedW+tongueOverflow), uint32(render.TongueH))
+	ls.SetSize(uint32(render.ExpandedW+tabOverflow), uint32(render.TabH))
 	ls.SetExclusiveZone(-1)
 	initialRight := restRightMargin(attention)
 	ls.SetMargin(int32(slotTopMargin(slot)), initialRight, 0, 0) // top, right, bottom, left
 	ls.SetKeyboardInteractivity(protocol.LayerSurfaceV1KeyboardInteractivityNone)
 
 	// Pre-build the two input regions used to gate pointer Enter/Leave.
-	// The surface is (ExpandedW + tongueOverflow) wide; the tongue strip
+	// The surface is (ExpandedW + tabOverflow) wide; the tab strip
 	// inside the buffer extends to the right edge of the surface. Input
 	// is only sensitive in surface-local coordinates that correspond to
 	// the *opaque* region.
-	regionTongue := d.compositor.CreateRegion()
-	regionTongue.Add(
-		int32(render.ExpandedW-render.TongueW), 0,
-		int32(render.TongueW+tongueOverflow), int32(render.TongueH),
+	regionTab := d.compositor.CreateRegion()
+	regionTab.Add(
+		int32(render.ExpandedW-render.TabW), 0,
+		int32(render.TabW+tabOverflow), int32(render.TabH),
 	)
 	regionFull := d.compositor.CreateRegion()
-	regionFull.Add(0, 0, int32(render.ExpandedW+tongueOverflow), int32(render.TongueH))
+	regionFull.Add(0, 0, int32(render.ExpandedW+tabOverflow), int32(render.TabH))
 
 	ps := &layerSurface{
 		surface:      surf,
@@ -136,7 +136,7 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 		attention:    attention,
 		log:          d.log,
 		d:            d,
-		regionTongue: regionTongue,
+		regionTab: regionTab,
 		regionFull:   regionFull,
 		slot:         slot,
 		rightMargin:  initialRight,
@@ -144,9 +144,9 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 		wobblePhase:  rand.Float64() * 2 * math.Pi,
 	}
 
-	// Start with the tongue-only input region — newly-created surfaces are
+	// Start with the tab-only input region — newly-created surfaces are
 	// always collapsed.
-	surf.SetInputRegion(regionTongue)
+	surf.SetInputRegion(regionTab)
 
 	// The configure handler: ack the serial and paint the first frame.
 	// Subsequent configure events (e.g. output scale changes) also repaint.
@@ -187,7 +187,7 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 	return ps, nil
 }
 
-// repaint acquires a buffer, renders the current state via render.DrawTongue,
+// repaint acquires a buffer, renders the current state via render.DrawTab,
 // attaches it, damages the full surface, and commits.  A nil Acquire means
 // both buffers are still in-flight; we mark dirty=true so the next
 // wl_buffer.release event retries via pool.onRelease.
@@ -199,16 +199,16 @@ func (s *layerSurface) repaint(d *dock) {
 			"session", s.sessionID, "expanded", s.state.Expanded)
 		return
 	}
-	img := render.DrawTongue(s.state, d.font)
+	img := render.DrawTab(s.state, d.font)
 	buf.CopyRGBA(img.RGBA)
 	s.surface.Attach(buf.Wl, 0, 0)
-	s.surface.Damage(0, 0, int32(render.ExpandedW), int32(render.TongueH))
-	// Match input region to visible area: tongue strip only when collapsed,
+	s.surface.Damage(0, 0, int32(render.ExpandedW), int32(render.TabH))
+	// Match input region to visible area: tab strip only when collapsed,
 	// full surface when expanded so the cursor can drift onto the panel.
 	if s.state.Expanded {
 		s.surface.SetInputRegion(s.regionFull)
 	} else {
-		s.surface.SetInputRegion(s.regionTongue)
+		s.surface.SetInputRegion(s.regionTab)
 	}
 	s.surface.Commit()
 	s.dirty = false
@@ -240,14 +240,14 @@ func (s *layerSurface) animateTick(now time.Time) bool {
 
 // computeRightMargin returns the right-margin (in protocol units — positive
 // values push the surface away from the right anchor, negative push it past).
-// Starts at -tongueOverflow (surface overflows the screen edge) and moves
+// Starts at -tabOverflow (surface overflows the screen edge) and moves
 // rightward (toward the screen edge) as alert/wobble shifts grow.
 //
-//	rest:        -tongueOverflow                 → tongue width visible = TongueW
-//	needs:       -tongueOverflow + alertProtrusion
+//	rest:        -tabOverflow                 → tab width visible = TabW
+//	needs:       -tabOverflow + alertProtrusion
 //	working:     adds cosine-eased wobble [0, wobbleAmp] on top of base
 func (s *layerSurface) computeRightMargin(now time.Time) int32 {
-	base := -int32(tongueOverflow)
+	base := -int32(tabOverflow)
 	if s.attention == "needs" {
 		base += alertProtrusion
 	}
@@ -263,7 +263,7 @@ func (s *layerSurface) computeRightMargin(now time.Time) int32 {
 // restRightMargin is the static right-margin used at surface creation time
 // before animation kicks in.
 func restRightMargin(attention string) int32 {
-	base := -int32(tongueOverflow)
+	base := -int32(tabOverflow)
 	if attention == "needs" {
 		base += alertProtrusion
 	}
@@ -271,9 +271,9 @@ func restRightMargin(attention string) int32 {
 }
 
 // slotTopMargin converts a slot index into a top-margin in px, including the
-// global topOffset and the per-tongue gap.
+// global topOffset and the per-tab gap.
 func slotTopMargin(slot int) int {
-	return topOffset + slot*(render.TongueH+tongueGap)
+	return topOffset + slot*(render.TabH+tabGap)
 }
 
 // destroy tears down the layer surface and releases the shm pool.
@@ -284,7 +284,7 @@ func (s *layerSurface) destroy() {
 		s.pool.close()
 		s.pool = nil
 	}
-	s.regionTongue.Destroy()
+	s.regionTab.Destroy()
 	s.regionFull.Destroy()
 	// Destroy layer_surface before wl_surface (protocol requirement).
 	s.ls.Destroy()

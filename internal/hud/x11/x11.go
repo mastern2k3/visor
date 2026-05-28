@@ -1,9 +1,9 @@
 // Package x11 is the native X11 HUD backend.
 //
 // Each Claude session gets its own borderless override-redirect X11 window
-// ("tongue") pinned to the right edge of the screen. Because each tongue is
+// ("tab") pinned to the right edge of the screen. Because each tab is
 // its own window with finite bounds, there's no transparent dead-space to
-// swallow clicks — the empty area between tongues is literal desktop, so
+// swallow clicks — the empty area between tabs is literal desktop, so
 // clicks land on whatever's underneath without any input-shape hackery.
 //
 // Per-window properties (set on map):

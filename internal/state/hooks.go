@@ -38,7 +38,7 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 		// Refuse to create a session with no identity. Without either a
 		// session ID or transcript path, the HUD has nothing to label or
 		// dispatch IPC against — it would render as a blank, undismissable
-		// tongue. Drop the event silently; the next hook with real data
+		// tab. Drop the event silently; the next hook with real data
 		// will land normally.
 		if p.SessionID == "" && p.TranscriptPath == "" {
 			return nil

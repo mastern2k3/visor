@@ -11,64 +11,64 @@ import (
 
 // Shared with both backends. Keep in sync with the x11 backend's window sizing.
 const (
-	TongueW   = 10  // visible width when collapsed
-	TongueH   = 36  // window height
+	TabW   = 10  // visible width when collapsed
+	TabH   = 36  // window height
 	ExpandedW = 300 // visible width when hovered
 	TextPad   = 18  // x where the cwd label begins
 	FontPt    = 13.5
 	// TextYBaseline is the freetype baseline; picked so the cap height sits
-	// centred-ish in TongueH. Empirically matched to the previous x11 layout.
+	// centred-ish in TabH. Empirically matched to the previous x11 layout.
 	TextYBaseline = 24
 
 	textRightPad = 8 // px reserved between text right-edge and panel edge for visual breathing room
 )
 
-// TongueState is the subset of session data the renderer needs.
-type TongueState struct {
+// TabState is the subset of session data the renderer needs.
+type TabState struct {
 	Color    uint32 // 0x00RRGGBB; high byte ignored
 	Label    string // already-resolved display label (Title || DisplayCWD || ID[:8])
 	Expanded bool   // true = full opaque panel; false = panel region is transparent
-	// TongueRight controls which side of the buffer the opaque "tongue strip"
-	// sits on. False (default): leftmost TongueW pixels are the tongue; panel
+	// TabRight controls which side of the buffer the opaque "tab strip"
+	// sits on. False (default): leftmost TabW pixels are the tab; panel
 	// extends rightward. Used by the x11 backend, whose window slides off the
 	// right edge of the screen and reveals the leftmost pixels first.
-	// True: rightmost TongueW pixels are the tongue; panel extends leftward.
+	// True: rightmost TabW pixels are the tab; panel extends leftward.
 	// Used by the wlr backend, whose right-anchored layer surface puts buffer
 	// x=ExpandedW-1 at the screen's right edge.
-	TongueRight bool
+	TabRight bool
 }
 
-// TongueImage is the rendered output plus metadata x11/wlr both need.
-type TongueImage struct {
+// TabImage is the rendered output plus metadata x11/wlr both need.
+type TabImage struct {
 	RGBA     *image.RGBA
 	Overflow bool // true if Label was wider than the panel could show
 }
 
-// DrawTongue produces an ExpandedW-by-TongueH RGBA buffer with a solid
+// DrawTab produces an ExpandedW-by-TabH RGBA buffer with a solid
 // background and the label rendered starting at TextPad.
 //
 // When s.Expanded is false (collapsed), the panel region is cleared to fully
 // transparent RGBA{0,0,0,0} and text rendering is skipped. Which side is the
-// "tongue strip" depends on s.TongueRight:
-//   - false (default, x11): leftmost TongueW pixels are the tongue; panel is
-//     x=TongueW..ExpandedW.
-//   - true (wlr): rightmost TongueW pixels are the tongue; panel is
-//     x=0..ExpandedW-TongueW.
+// "tab strip" depends on s.TabRight:
+//   - false (default, x11): leftmost TabW pixels are the tab; panel is
+//     x=TabW..ExpandedW.
+//   - true (wlr): rightmost TabW pixels are the tab; panel is
+//     x=0..ExpandedW-TabW.
 //
 // When s.Expanded is true, the entire buffer is opaque and the label is drawn.
 //
 // `font` may be nil — in that case the label is skipped and Overflow is false.
-func DrawTongue(s TongueState, font *truetype.Font) TongueImage {
-	img := image.NewRGBA(image.Rect(0, 0, ExpandedW, TongueH))
+func DrawTab(s TabState, font *truetype.Font) TabImage {
+	img := image.NewRGBA(image.Rect(0, 0, ExpandedW, TabH))
 	bg := unpackRGBA(s.Color)
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: bg}, image.Point{}, draw.Src)
 
 	// panelRect is the region that becomes transparent when collapsed.
 	var panelRect image.Rectangle
-	if s.TongueRight {
-		panelRect = image.Rect(0, 0, ExpandedW-TongueW, TongueH)
+	if s.TabRight {
+		panelRect = image.Rect(0, 0, ExpandedW-TabW, TabH)
 	} else {
-		panelRect = image.Rect(TongueW, 0, ExpandedW, TongueH)
+		panelRect = image.Rect(TabW, 0, ExpandedW, TabH)
 	}
 
 	if !s.Expanded {
@@ -76,22 +76,22 @@ func DrawTongue(s TongueState, font *truetype.Font) TongueImage {
 		// the desktop through it — Wayland analogue to the x11 window-slide.
 		transparent := color.RGBA{0, 0, 0, 0}
 		draw.Draw(img, panelRect, &image.Uniform{C: transparent}, image.Point{}, draw.Src)
-		return TongueImage{RGBA: img}
+		return TabImage{RGBA: img}
 	}
 
-	out := TongueImage{RGBA: img}
+	out := TabImage{RGBA: img}
 	if font == nil || s.Label == "" {
 		return out
 	}
 
-	// Text always sits inside the panel. For TongueRight, panel is on the left:
-	// text starts at TextPad and must end before the tongue strip starts.
-	// For !TongueRight, text starts at TextPad past the tongue strip.
+	// Text always sits inside the panel. For TabRight, panel is on the left:
+	// text starts at TextPad and must end before the tab strip starts.
+	// For !TabRight, text starts at TextPad past the tab strip.
 	fg := contrastFG(bg)
 	var textX, rightLimit int
-	if s.TongueRight {
+	if s.TabRight {
 		textX = TextPad
-		rightLimit = ExpandedW - TongueW - textRightPad
+		rightLimit = ExpandedW - TabW - textRightPad
 	} else {
 		textX = TextPad
 		rightLimit = ExpandedW - textRightPad
@@ -134,7 +134,7 @@ func unpackRGBA(c uint32) color.RGBA {
 }
 
 // ColorFor maps session state (activity, attention, waiting) to the canonical
-// 0x00RRGGBB tongue colour shared by all backends. Both x11 and wlr call this
+// 0x00RRGGBB tab colour shared by all backends. Both x11 and wlr call this
 // so the colour scheme never drifts between backends.
 func ColorFor(activity, attention, waiting string) uint32 {
 	switch {

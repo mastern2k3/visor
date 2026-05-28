@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a native Wayland HUD backend (`wlr`) that runs on wlr-layer-shell compositors (Niri, sway, hyprland, river, wayfire, labwc, KDE), with feature parity to the existing X11 backend (tongue per session, hover-expand, click-to-ack/dismiss/jump, text rendering).
+**Goal:** Add a native Wayland HUD backend (`wlr`) that runs on wlr-layer-shell compositors (Niri, sway, hyprland, river, wayfire, labwc, KDE), with feature parity to the existing X11 backend (tab per session, hover-expand, click-to-ack/dismiss/jump, text rendering).
 
 **Architecture:** Extract the X11 backend's pure-pixel drawing into a new backend-agnostic `internal/hud/render` package returning `*image.RGBA`. Build `internal/hud/wlr` on top of `codeberg.org/tesselslate/wl` (pure-Go Wayland client) plus locally-generated `wlr-layer-shell-unstable-v1` bindings. One `zwlr_layer_surface_v1` per session, anchored to the right edge with double-buffered `wl_shm` frames. Subscription/click dispatch reuses the existing daemon IPC.
 
@@ -16,8 +16,8 @@
 
 **New files:**
 - `internal/hud/render/font.go` — Font loader (moved from `internal/hud/x11/font.go`), returns `*truetype.Font`.
-- `internal/hud/render/tongue.go` — `DrawTongue(state, dims, font) *image.RGBA`. Pure function.
-- `internal/hud/render/tongue_test.go` — Unit tests for `DrawTongue` and overflow detection.
+- `internal/hud/render/tab.go` — `DrawTab(state, dims, font) *image.RGBA`. Pure function.
+- `internal/hud/render/tab_test.go` — Unit tests for `DrawTab` and overflow detection.
 - `internal/hud/wlr/wlr.go` — `Backend` impl (Name/Install/Open/Close).
 - `internal/hud/wlr/dock.go` — Display connect, registry binding, event dispatch loop, shutdown.
 - `internal/hud/wlr/surface.go` — One `layerSurface` per session: create, configure, redraw, destroy.
@@ -30,7 +30,7 @@
 
 **Modified files:**
 - `internal/hud/x11/font.go` — Deleted.
-- `internal/hud/x11/tongue.go` — `render()` delegates pixel drawing to `render.DrawTongue`, wraps result in `xgraphics.Image` for X upload. Tooltip drawing stays in x11 (X-only feature).
+- `internal/hud/x11/tab.go` — `render()` delegates pixel drawing to `render.DrawTab`, wraps result in `xgraphics.Image` for X upload. Tooltip drawing stays in x11 (X-only feature).
 - `internal/hud/x11/dock.go` — `loadFont()` call replaced with `render.LoadFont()`.
 - `cmd/visor/hud.go` — `pickBackend` gains a `"wlr"` case.
 - `go.mod` / `go.sum` — Adds `codeberg.org/tesselslate/wl` dependency.
@@ -47,13 +47,13 @@
 
 ## Task 1: Extract pure-Go `render` package — preserve x11 behavior
 
-**Goal:** Move font loading and tongue pixel drawing out of `internal/hud/x11` into a new `internal/hud/render` package. After this task, x11 must look pixel-identical to before. No Wayland code yet.
+**Goal:** Move font loading and tab pixel drawing out of `internal/hud/x11` into a new `internal/hud/render` package. After this task, x11 must look pixel-identical to before. No Wayland code yet.
 
 **Files:**
 - Create: `internal/hud/render/font.go`
-- Create: `internal/hud/render/tongue.go`
-- Create: `internal/hud/render/tongue_test.go`
-- Modify: `internal/hud/x11/tongue.go`
+- Create: `internal/hud/render/tab.go`
+- Create: `internal/hud/render/tab_test.go`
+- Modify: `internal/hud/x11/tab.go`
 - Modify: `internal/hud/x11/dock.go`
 - Delete: `internal/hud/x11/font.go`
 
@@ -64,7 +64,7 @@
 Move font discovery out of x11. The font is loaded via `xgraphics.ParseFont` today; that helper just wraps `truetype.Parse`. Use `truetype.Parse` directly so this file has no X11 deps.
 
 ```go
-// Package render produces backend-agnostic tongue images consumed by the
+// Package render produces backend-agnostic tab images consumed by the
 // x11 and wlr HUD backends.
 package render
 
@@ -114,7 +114,7 @@ func parseFont(r io.Reader) (*truetype.Font, error) {
 }
 ```
 
-- [ ] **Step 1.2: Create `internal/hud/render/tongue.go`**
+- [ ] **Step 1.2: Create `internal/hud/render/tab.go`**
 
 This is the core extraction. The x11 code currently uses `xgraphics.Image.Text` (which wraps freetype-go's glyph rasterizer) and `xgraphics.Extents` for measuring. We replace those with direct freetype-go calls on `*image.RGBA`. The output of this function is what x11 would historically have drawn into the window's background pixmap, minus the X-specific upload step.
 
@@ -132,40 +132,40 @@ import (
 
 // Shared with both backends. Keep in sync with the x11 backend's window sizing.
 const (
-	TongueW   = 10  // visible width when collapsed
-	TongueH   = 36  // window height
+	TabW   = 10  // visible width when collapsed
+	TabH   = 36  // window height
 	ExpandedW = 300 // visible width when hovered
 	TextPad   = 18  // x where the cwd label begins
 	FontPt    = 13.5
 	// TextYBaseline is the freetype baseline; picked so the cap height sits
-	// centred-ish in TongueH. Empirically matched to the previous x11 layout.
+	// centred-ish in TabH. Empirically matched to the previous x11 layout.
 	TextYBaseline = 24
 )
 
-// TongueState is the subset of session data the renderer needs.
-type TongueState struct {
+// TabState is the subset of session data the renderer needs.
+type TabState struct {
 	Color uint32 // 0x00RRGGBB background
 	Label string // already-resolved display label (Title || DisplayCWD || ID[:8])
 }
 
-// TongueImage is the rendered output plus metadata x11/wlr both need.
-type TongueImage struct {
+// TabImage is the rendered output plus metadata x11/wlr both need.
+type TabImage struct {
 	RGBA     *image.RGBA
 	Overflow bool // true if Label was wider than the panel could show
 }
 
-// DrawTongue produces a TongueW-by-TongueH (wait, ExpandedW-wide) RGBA buffer
+// DrawTab produces a TabW-by-TabH (wait, ExpandedW-wide) RGBA buffer
 // with a solid background and the label rendered starting at TextPad. The
 // returned image is fully opaque; the caller decides how to display the
 // collapsed-only portion vs the expanded portion.
 //
 // `font` may be nil — in that case the label is skipped and Overflow is false.
-func DrawTongue(s TongueState, font *truetype.Font) TongueImage {
-	img := image.NewRGBA(image.Rect(0, 0, ExpandedW, TongueH))
+func DrawTab(s TabState, font *truetype.Font) TabImage {
+	img := image.NewRGBA(image.Rect(0, 0, ExpandedW, TabH))
 	bg := unpackRGBA(s.Color)
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: bg}, image.Point{}, draw.Src)
 
-	out := TongueImage{RGBA: img}
+	out := TabImage{RGBA: img}
 	if font == nil || s.Label == "" {
 		return out
 	}
@@ -215,7 +215,7 @@ func contrastFG(bg color.RGBA) color.RGBA {
 }
 ```
 
-- [ ] **Step 1.3: Create `internal/hud/render/tongue_test.go`**
+- [ ] **Step 1.3: Create `internal/hud/render/tab_test.go`**
 
 Pure-function tests. No X server, no Wayland, no font discovery — these tests skip if the system font isn't available.
 
@@ -227,29 +227,29 @@ import (
 	"testing"
 )
 
-func TestDrawTongue_BackgroundFill(t *testing.T) {
-	img := DrawTongue(TongueState{Color: 0x223344, Label: ""}, nil)
-	if img.RGBA.Bounds().Dx() != ExpandedW || img.RGBA.Bounds().Dy() != TongueH {
-		t.Fatalf("size = %v, want %dx%d", img.RGBA.Bounds(), ExpandedW, TongueH)
+func TestDrawTab_BackgroundFill(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x223344, Label: ""}, nil)
+	if img.RGBA.Bounds().Dx() != ExpandedW || img.RGBA.Bounds().Dy() != TabH {
+		t.Fatalf("size = %v, want %dx%d", img.RGBA.Bounds(), ExpandedW, TabH)
 	}
-	// Sample a pixel in the collapsed-tongue region (x=2) and one in the panel (x=200).
+	// Sample a pixel in the collapsed-tab region (x=2) and one in the panel (x=200).
 	for _, x := range []int{2, 200} {
-		got := img.RGBA.RGBAAt(x, TongueH/2)
+		got := img.RGBA.RGBAAt(x, TabH/2)
 		want := color.RGBA{R: 0x22, G: 0x33, B: 0x44, A: 0xff}
 		if got != want {
-			t.Errorf("pixel at (%d,%d) = %v, want %v", x, TongueH/2, got, want)
+			t.Errorf("pixel at (%d,%d) = %v, want %v", x, TabH/2, got, want)
 		}
 	}
 }
 
-func TestDrawTongue_NoFontSkipsText(t *testing.T) {
-	img := DrawTongue(TongueState{Color: 0x000000, Label: "ignored without font"}, nil)
+func TestDrawTab_NoFontSkipsText(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x000000, Label: "ignored without font"}, nil)
 	if img.Overflow {
 		t.Errorf("overflow=true with nil font; want false")
 	}
 }
 
-func TestDrawTongue_OverflowOnLongLabel(t *testing.T) {
+func TestDrawTab_OverflowOnLongLabel(t *testing.T) {
 	font, err := LoadFont()
 	if err != nil {
 		t.Skipf("no system font: %v", err)
@@ -258,7 +258,7 @@ func TestDrawTongue_OverflowOnLongLabel(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		long += "x"
 	}
-	img := DrawTongue(TongueState{Color: 0x445566, Label: long}, font)
+	img := DrawTab(TabState{Color: 0x445566, Label: long}, font)
 	if !img.Overflow {
 		t.Errorf("overflow=false for 200-char label; want true")
 	}
@@ -286,22 +286,22 @@ func TestContrastFG(t *testing.T) {
 ```
 go test ./internal/hud/render/...
 ```
-Expected: all tests pass (or `TestDrawTongue_OverflowOnLongLabel` skips if no system font; that's acceptable on minimal CI/sandbox environments).
+Expected: all tests pass (or `TestDrawTab_OverflowOnLongLabel` skips if no system font; that's acceptable on minimal CI/sandbox environments).
 
-- [ ] **Step 1.5: Modify `internal/hud/x11/tongue.go::render()` to call `render.DrawTongue`**
+- [ ] **Step 1.5: Modify `internal/hud/x11/tab.go::render()` to call `render.DrawTab`**
 
-Replace the inline drawing loop + `im.Text` call with a delegation. We still need an `xgraphics.Image` to upload to X, but we build it *from* the `*image.RGBA` returned by `render.DrawTongue`.
+Replace the inline drawing loop + `im.Text` call with a delegation. We still need an `xgraphics.Image` to upload to X, but we build it *from* the `*image.RGBA` returned by `render.DrawTab`.
 
 Find the current `render()` method (lines ~405-436) and replace its body:
 
 ```go
-func (t *tongue) render() {
+func (t *tab) render() {
 	if t.expandedImg != nil {
 		t.expandedImg.Destroy()
 		t.expandedImg = nil
 	}
 
-	rt := render.DrawTongue(render.TongueState{
+	rt := render.DrawTab(render.TabState{
 		Color: t.opt.color,
 		Label: displayLabel(t.sess),
 	}, t.font)
@@ -315,23 +315,23 @@ func (t *tongue) render() {
 	im.CreatePixmap()
 	im.XDraw()
 	im.XSurfaceSet(t.win.Id)
-	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, expandedW, tongueH)
+	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, expandedW, tabH)
 	t.expandedImg = im
 }
 ```
 
 Add the import: `"github.com/nitzanz/visor/internal/hud/render"`.
 
-Delete the now-unused `rgba` and `contrastFG` helpers from `tongue.go` (they live in `render` now).
+Delete the now-unused `rgba` and `contrastFG` helpers from `tab.go` (they live in `render` now).
 
-The tooltip drawing in `showTooltip` still uses `im.Text` and `rgba` — leave the tooltip alone for this task. Re-add a local `rgba` helper in tongue.go *only if* the tooltip needs it, or rewrite the tooltip to use `render.unpackRGBA` (it's unexported — easier to just keep a local helper for now). Concretely: keep the `rgba` function but mark it as tooltip-only by moving it next to `showTooltip`.
+The tooltip drawing in `showTooltip` still uses `im.Text` and `rgba` — leave the tooltip alone for this task. Re-add a local `rgba` helper in tab.go *only if* the tooltip needs it, or rewrite the tooltip to use `render.unpackRGBA` (it's unexported — easier to just keep a local helper for now). Concretely: keep the `rgba` function but mark it as tooltip-only by moving it next to `showTooltip`.
 
-Also replace the size constants used in `newTongue` (`expandedW`, `tongueH`) with `render.ExpandedW` and `render.TongueH` so both backends share the same dimensions. Keep the lowercase aliases at the top of `tongue.go`:
+Also replace the size constants used in `newTab` (`expandedW`, `tabH`) with `render.ExpandedW` and `render.TabH` so both backends share the same dimensions. Keep the lowercase aliases at the top of `tab.go`:
 
 ```go
 const (
-	tongueW   = render.TongueW
-	tongueH   = render.TongueH
+	tabW   = render.TabW
+	tabH   = render.TabH
 	expandedW = render.ExpandedW
 	textPad   = render.TextPad
 	fontPt    = render.FontPt
@@ -362,12 +362,12 @@ rm internal/hud/x11/font.go
 go build ./...
 go vet ./...
 ```
-Expected: no errors. If you have an X session handy, run `./bin/visor daemon &` + `./bin/visor hud open --backend=x11` and confirm tongues still render the same as before. Pixel-identical output is the success criterion.
+Expected: no errors. If you have an X session handy, run `./bin/visor daemon &` + `./bin/visor hud open --backend=x11` and confirm tabs still render the same as before. Pixel-identical output is the success criterion.
 
 - [ ] **Step 1.9: Commit**
 
 ```
-git add internal/hud/render/ internal/hud/x11/tongue.go internal/hud/x11/dock.go
+git add internal/hud/render/ internal/hud/x11/tab.go internal/hud/x11/dock.go
 git rm internal/hud/x11/font.go
 git commit -m "refactor: extract internal/hud/render from x11 backend"
 ```
@@ -669,7 +669,7 @@ git commit -m "feat(wlr): backend skeleton — connect, bind globals, dispatch l
 
 ---
 
-## Task 4: One static tongue surface
+## Task 4: One static tab surface
 
 **Goal:** Show a single hard-coded layer surface (fixed colour, fixed position) on the right edge of the screen. No snapshot subscription, no input handling. This proves the buffer/configure dance works before we layer on the rest.
 
@@ -682,7 +682,7 @@ git commit -m "feat(wlr): backend skeleton — connect, bind globals, dispatch l
 
 - [ ] **Step 4.1: Create `internal/hud/wlr/buffer.go`**
 
-A double-buffered `wl_shm` pool sized for the larger (expanded) tongue. Each `Buffer` tracks whether the compositor still holds it. Uses `golang.org/x/sys/unix` for `memfd_create`.
+A double-buffered `wl_shm` pool sized for the larger (expanded) tab. Each `Buffer` tracks whether the compositor still holds it. Uses `golang.org/x/sys/unix` for `memfd_create`.
 
 First add the dep:
 ```
@@ -705,7 +705,7 @@ import (
 
 const (
 	bufW    = render.ExpandedW
-	bufH    = render.TongueH
+	bufH    = render.TabH
 	bufStri = bufW * 4 // 4 bytes per pixel, ARGB8888
 	bufSize = bufStri * bufH
 )
@@ -816,7 +816,7 @@ import (
 	"github.com/nitzanz/visor/internal/hud/wlr/protocol"
 )
 
-// layerSurface is one tongue: a wl_surface + zwlr_layer_surface_v1 pair plus
+// layerSurface is one tab: a wl_surface + zwlr_layer_surface_v1 pair plus
 // the shm pool that backs its frames.
 type layerSurface struct {
 	surface      *wl.Surface
@@ -828,7 +828,7 @@ type layerSurface struct {
 
 	// Pending pixels to draw on next configure-ack. For the static surface
 	// in this task, we paint once and never again.
-	state render.TongueState
+	state render.TabState
 	font  *font // placeholder pointer; assigned in task 5
 }
 
@@ -836,20 +836,20 @@ type font = struct{ /* placeholder; real type in task 5 */ }
 
 // newLayerSurface creates the surface, sets layer-shell properties, and waits
 // for the first configure (via a roundtrip) before painting.
-func newLayerSurface(d *dock, slot int, st render.TongueState) (*layerSurface, error) {
+func newLayerSurface(d *dock, slot int, st render.TabState) (*layerSurface, error) {
 	surf := d.compositor.CreateSurface()
 	ls := d.layerShell.GetLayerSurface(surf, d.output,
 		protocol.ZwlrLayerShellV1LayerOverlay,
-		"visor-tongue",
+		"visor-tab",
 	)
 
 	// Anchor to the top-right corner (anchor right + top); margin_top stacks
-	// tongues vertically. Exclusive zone -1: don't reserve space, don't be
+	// tabs vertically. Exclusive zone -1: don't reserve space, don't be
 	// pushed by exclusives.
 	ls.SetAnchor(protocol.ZwlrLayerSurfaceV1AnchorTop | protocol.ZwlrLayerSurfaceV1AnchorRight)
-	ls.SetSize(uint32(render.ExpandedW), uint32(render.TongueH))
+	ls.SetSize(uint32(render.ExpandedW), uint32(render.TabH))
 	ls.SetExclusiveZone(-1)
-	ls.SetMargin(int32(slot*render.TongueH), 0, 0, 0) // top, right, bottom, left
+	ls.SetMargin(int32(slot*render.TabH), 0, 0, 0) // top, right, bottom, left
 	ls.SetKeyboardInteractivity(0)                    // none
 
 	ps := &layerSurface{surface: surf, layerSurface: ls, state: st}
@@ -878,17 +878,17 @@ func newLayerSurface(d *dock, slot int, st render.TongueState) (*layerSurface, e
 	return ps, nil
 }
 
-// repaint acquires a buffer, fills it from render.DrawTongue, attaches and
+// repaint acquires a buffer, fills it from render.DrawTab, attaches and
 // commits.
 func (s *layerSurface) repaint(d *dock) {
 	buf := s.pool.Acquire()
 	if buf == nil {
 		return // both buffers in-flight; the next compositor frame will retry
 	}
-	img := render.DrawTongue(s.state, d.font)
+	img := render.DrawTab(s.state, d.font)
 	buf.CopyRGBA(img.RGBA)
 	s.surface.Attach(buf.Wl, 0, 0)
-	s.surface.Damage(0, 0, render.ExpandedW, render.TongueH)
+	s.surface.Damage(0, 0, render.ExpandedW, render.TabH)
 	s.surface.Commit()
 }
 
@@ -921,7 +921,7 @@ Imports:
 In `newDock`, after globals are bound, load the font:
 ```go
 if f, err := render.LoadFont(); err != nil {
-	d.log.Warn("font load failed; tongues will be blank", "err", err)
+	d.log.Warn("font load failed; tabs will be blank", "err", err)
 } else {
 	d.font = f
 }
@@ -929,7 +929,7 @@ if f, err := render.LoadFont(); err != nil {
 
 After font load, create a static surface for smoke-testing:
 ```go
-ls, err := newLayerSurface(d, 0, render.TongueState{
+ls, err := newLayerSurface(d, 0, render.TabState{
 	Color: 0xff5566,
 	Label: "visor wlr smoke test",
 })
@@ -1076,7 +1076,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 	seen := map[string]bool{}
 	for i, s := range snap {
 		seen[s.ID] = true
-		st := render.TongueState{
+		st := render.TabState{
 			Color: colorFor(s),
 			Label: labelFor(s),
 		}
@@ -1151,7 +1151,7 @@ func colorFor(s sessionView) uint32 {
 // setSlot updates the vertical position of the surface within the dock by
 // re-issuing set_margin and committing.
 func (s *layerSurface) setSlot(slot int) {
-	s.layerSurface.SetMargin(int32(slot*render.TongueH), 0, 0, 0)
+	s.layerSurface.SetMargin(int32(slot*render.TabH), 0, 0, 0)
 	s.surface.Commit()
 }
 ```
@@ -1169,10 +1169,10 @@ Same temporary `pickBackend` patch, then:
 ```
 ./bin/visor daemon &
 ./bin/visor hud open --backend=wlr
-# In another terminal: open and close Claude sessions, watch tongues appear and disappear.
+# In another terminal: open and close Claude sessions, watch tabs appear and disappear.
 ```
 
-Expected: each live session gets a tongue, label is correct, colour changes on attention transitions, tongues vanish when sessions end. Ctrl-C exits cleanly.
+Expected: each live session gets a tab, label is correct, colour changes on attention transitions, tabs vanish when sessions end. Ctrl-C exits cleanly.
 
 - [ ] **Step 5.6: Commit**
 
@@ -1192,31 +1192,31 @@ git commit -m "feat(wlr): drive surfaces from daemon snapshot stream"
 - Modify: `internal/hud/wlr/dock.go`
 - Modify: `internal/hud/wlr/surface.go`
 
-> **Design note — hover-expand on Wayland:** The x11 backend uses fixed-width windows and slides them sideways to "expand". Layer surfaces are anchored, not free-moving, so the cleanest analogue on Wayland is to render the *collapsed* state (only the leftmost `TongueW` opaque, rest transparent) by default and switch to the *expanded* state (full opaque panel) on pointer enter. This requires the buffer to carry alpha pixels — the `ARGB8888` format already supports it; we just paint the transparent strip at draw time when collapsed.
+> **Design note — hover-expand on Wayland:** The x11 backend uses fixed-width windows and slides them sideways to "expand". Layer surfaces are anchored, not free-moving, so the cleanest analogue on Wayland is to render the *collapsed* state (only the leftmost `TabW` opaque, rest transparent) by default and switch to the *expanded* state (full opaque panel) on pointer enter. This requires the buffer to carry alpha pixels — the `ARGB8888` format already supports it; we just paint the transparent strip at draw time when collapsed.
 >
-> Concretely: pass `Expanded bool` into `render.TongueState`, and in `DrawTongue` clear `x = TongueW .. ExpandedW` to transparent when collapsed. Update the unit tests accordingly (a new test: "collapsed state has transparent panel region").
+> Concretely: pass `Expanded bool` into `render.TabState`, and in `DrawTab` clear `x = TabW .. ExpandedW` to transparent when collapsed. Update the unit tests accordingly (a new test: "collapsed state has transparent panel region").
 
 ### Steps
 
-- [ ] **Step 6.1: Extend `render.TongueState` and `DrawTongue` for collapsed state**
+- [ ] **Step 6.1: Extend `render.TabState` and `DrawTab` for collapsed state**
 
-In `internal/hud/render/tongue.go`, add a field:
+In `internal/hud/render/tab.go`, add a field:
 ```go
-type TongueState struct {
+type TabState struct {
 	Color    uint32
 	Label    string
 	Expanded bool
 }
 ```
 
-In `DrawTongue`, after the background fill:
+In `DrawTab`, after the background fill:
 ```go
 if !s.Expanded {
-	// Clear the panel region (x = TongueW..ExpandedW) to fully transparent.
+	// Clear the panel region (x = TabW..ExpandedW) to fully transparent.
 	transparent := color.RGBA{0, 0, 0, 0}
-	clearRect := image.Rect(TongueW, 0, ExpandedW, TongueH)
+	clearRect := image.Rect(TabW, 0, ExpandedW, TabH)
 	draw.Draw(img, clearRect, &image.Uniform{C: transparent}, image.Point{}, draw.Src)
-	out := TongueImage{RGBA: img}
+	out := TabImage{RGBA: img}
 	return out
 }
 ```
@@ -1224,40 +1224,40 @@ if !s.Expanded {
 
 - [ ] **Step 6.2: Add a render test for the collapsed state**
 
-In `internal/hud/render/tongue_test.go`:
+In `internal/hud/render/tab_test.go`:
 
 ```go
-func TestDrawTongue_CollapsedHasTransparentPanel(t *testing.T) {
-	img := DrawTongue(TongueState{Color: 0x223344, Expanded: false}, nil)
-	// Tongue strip (x=2) should be opaque bg.
-	got := img.RGBA.RGBAAt(2, TongueH/2)
+func TestDrawTab_CollapsedHasTransparentPanel(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x223344, Expanded: false}, nil)
+	// Tab strip (x=2) should be opaque bg.
+	got := img.RGBA.RGBAAt(2, TabH/2)
 	if got.A != 0xff {
-		t.Errorf("tongue strip alpha = %#x, want 0xff", got.A)
+		t.Errorf("tab strip alpha = %#x, want 0xff", got.A)
 	}
 	// Panel region (x=150) should be transparent.
-	got = img.RGBA.RGBAAt(150, TongueH/2)
+	got = img.RGBA.RGBAAt(150, TabH/2)
 	if got.A != 0 {
 		t.Errorf("panel alpha = %#x, want 0", got.A)
 	}
 }
 
-func TestDrawTongue_ExpandedHasOpaquePanel(t *testing.T) {
-	img := DrawTongue(TongueState{Color: 0x223344, Expanded: true}, nil)
-	got := img.RGBA.RGBAAt(150, TongueH/2)
+func TestDrawTab_ExpandedHasOpaquePanel(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x223344, Expanded: true}, nil)
+	got := img.RGBA.RGBAAt(150, TabH/2)
 	if got.A != 0xff {
 		t.Errorf("expanded panel alpha = %#x, want 0xff", got.A)
 	}
 }
 ```
 
-Run: `go test ./internal/hud/render/... -run TongueCollapsed -v`. Expected: PASS (both new tests).
+Run: `go test ./internal/hud/render/... -run TabCollapsed -v`. Expected: PASS (both new tests).
 
-- [ ] **Step 6.3: Update `internal/hud/x11/tongue.go` to keep working**
+- [ ] **Step 6.3: Update `internal/hud/x11/tab.go` to keep working**
 
 The x11 backend now needs to pass `Expanded` too — it always wants the expanded state because its window is full-width and uses positional sliding. Set `Expanded: true` in the x11 `render()` call:
 
 ```go
-rt := render.DrawTongue(render.TongueState{
+rt := render.DrawTab(render.TabState{
 	Color:    t.opt.color,
 	Label:    displayLabel(t.sess),
 	Expanded: true,
@@ -1375,7 +1375,7 @@ type layerSurface struct {
 
 Pass it in via `newLayerSurface`:
 ```go
-func newLayerSurface(d *dock, slot int, id string, st render.TongueState) (*layerSurface, error) {
+func newLayerSurface(d *dock, slot int, id string, st render.TabState) (*layerSurface, error) {
 	// ...
 	ps := &layerSurface{surface: surf, layerSurface: ls, state: st, sessionID: id}
 	// ...
@@ -1415,12 +1415,12 @@ go build ./...
 ./bin/visor daemon &
 ./bin/visor hud open --backend=wlr
 ```
-Hover a tongue: the panel appears (full label visible). Move away: panel disappears. Right-click a needs-attention tongue: it transitions to dismissed. Middle-click: ack. Left-click: focus warps to the session via `internal/focus` (EWMH ClientMessage and/or tmux select-pane, depending on what was captured at SessionStart).
+Hover a tab: the panel appears (full label visible). Move away: panel disappears. Right-click a needs-attention tab: it transitions to dismissed. Middle-click: ack. Left-click: focus warps to the session via `internal/focus` (EWMH ClientMessage and/or tmux select-pane, depending on what was captured at SessionStart).
 
 - [ ] **Step 6.9: Commit**
 
 ```
-git add internal/hud/render/ internal/hud/wlr/ internal/hud/x11/tongue.go
+git add internal/hud/render/ internal/hud/wlr/ internal/hud/x11/tab.go
 git commit -m "feat(wlr): pointer input — hover expand, click ack/dismiss/jump"
 ```
 
@@ -1500,7 +1500,7 @@ go vet ./...
 
 Run under each available compositor and confirm:
 
-| Compositor | Tongue visible | Hover-expand | Right-click dismiss | Middle-click ack | Clean shutdown |
+| Compositor | Tab visible | Hover-expand | Right-click dismiss | Middle-click ack | Clean shutdown |
 |---|---|---|---|---|---|
 | Niri | ☐ | ☐ | ☐ | ☐ | ☐ |
 | sway (optional) | ☐ | ☐ | ☐ | ☐ | ☐ |

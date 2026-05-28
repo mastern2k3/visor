@@ -1,4 +1,4 @@
-// Package render produces backend-agnostic tongue images consumed by the
+// Package render produces backend-agnostic tab images consumed by the
 // x11 and wlr HUD backends.
 package render
 

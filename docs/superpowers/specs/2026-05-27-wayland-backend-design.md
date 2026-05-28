@@ -7,7 +7,7 @@ Date: 2026-05-27
 
 Add a third HUD backend, `wlr`, that renders the Visor dock natively on
 wlr-layer-shell compositors (Niri, sway, hyprland, river, wayfire, labwc, KDE).
-The backend mirrors the existing X11 backend's behavior: one tongue per session,
+The backend mirrors the existing X11 backend's behavior: one tab per session,
 anchored to the right screen edge, hover to expand, click to ack/dismiss/jump.
 
 Out of scope for this iteration: GNOME (no layer-shell), multi-output selection,
@@ -39,13 +39,13 @@ No cgo. No system Wayland libraries required at build or run time.
 
 ```
 internal/hud/render/        # NEW — shared backend-agnostic drawing
-  tongue.go                 # DrawTongue(state, dims) → *image.RGBA
+  tab.go                 # DrawTab(state, dims) → *image.RGBA
   font.go                   # Font loading (moved from x11/font.go)
 
 internal/hud/wlr/           # NEW — Wayland backend
   wlr.go                    # Backend impl (Name/Install/Open/Close)
   dock.go                   # Display connect, registry, event loop, lifecycle
-  surface.go                # One layer_surface per session-tongue
+  surface.go                # One layer_surface per session-tab
   buffer.go                 # wl_shm pool, double-buffered RGBA frames
   input.go                  # wl_pointer: hover → expand, click → ack/dismiss/jump
   subscribe.go              # Consumes snapshot stream from daemon
@@ -55,7 +55,7 @@ internal/hud/wlr/           # NEW — Wayland backend
 
 internal/hud/x11/           # Modified to call internal/hud/render
   dock.go                   # unchanged
-  tongue.go                 # slimmed: delegates pixel drawing to render package
+  tab.go                 # slimmed: delegates pixel drawing to render package
   font.go                   # DELETED (moved to render)
   ...
 
@@ -64,7 +64,7 @@ cmd/visor/hud.go            # pickBackend gains a "wlr" case
 
 ## Shared render extraction
 
-X11 currently draws each tongue into an `xgraphics.Image`, which wraps an
+X11 currently draws each tab into an `xgraphics.Image`, which wraps an
 `image.RGBA`. The pixel-level drawing (background fill, accent stripe, status
 glyph, session label, hover-expand layout) is identical to what the Wayland
 backend needs. Without extraction we'd duplicate ~200 LOC.
@@ -72,7 +72,7 @@ backend needs. Without extraction we'd duplicate ~200 LOC.
 The new `internal/hud/render` package exposes a small API:
 
 ```go
-type TongueState struct {
+type TabState struct {
     Activity   state.Activity
     Waiting    state.Waiting
     Attention  state.Attention
@@ -80,16 +80,16 @@ type TongueState struct {
     Expanded   bool
 }
 
-type TongueDims struct {
+type TabDims struct {
     CollapsedW, ExpandedW int
     Height                int
     Scale                 int  // for HiDPI, pass 1 for now
 }
 
-func DrawTongue(s TongueState, d TongueDims, fnt *truetype.Font) *image.RGBA
+func DrawTab(s TabState, d TabDims, fnt *truetype.Font) *image.RGBA
 ```
 
-- `DrawTongue` is pure: takes inputs, returns a fresh `*image.RGBA`. No I/O,
+- `DrawTab` is pure: takes inputs, returns a fresh `*image.RGBA`. No I/O,
   no global state. Trivial to unit-test (compare a known state to a golden
   image).
 - The X11 backend wraps the result in an `xgraphics.Image` and uploads as a
@@ -125,18 +125,18 @@ edge of the output. Each surface:
 
 - Sets `keyboard_interactivity = NONE`.
 - Sets `exclusive_zone = -1` (don't reserve, don't be pushed by exclusives).
-- Sets a fixed initial size `(collapsedW, tongueHeight)`. The compositor sends
+- Sets a fixed initial size `(collapsedW, tabHeight)`. The compositor sends
   `configure` with the size it actually wants; we ack and use that.
-- Sets `margin.top` to position the tongue vertically. Tongues stack
+- Sets `margin.top` to position the tab vertically. Tabs stack
   top-to-bottom by `Snapshot` order — same as X11.
 
 Hover-expand: on `wl_pointer.enter` we request the surface to resize to
-`(expandedW, tongueHeight)` by `set_size` + commit. On `leave` we resize back.
+`(expandedW, tabHeight)` by `set_size` + commit. On `leave` we resize back.
 The compositor's `configure` response is authoritative for the final size.
 
 ### Buffers
 
-`wl_shm_pool` per surface, two `wl_buffer`s of size `expandedW * tongueHeight *
+`wl_shm_pool` per surface, two `wl_buffer`s of size `expandedW * tabHeight *
 4` bytes (always sized for the larger state — we render the actual content
 inside, padding with transparent pixels when collapsed).
 
@@ -228,7 +228,7 @@ objects are not goroutine-safe.
 - **No automated Wayland integration test.** Visor has no CI and no test
   suite per CLAUDE.md; adding a headless compositor harness is out of scope.
   Manual verification: run `./bin/visor daemon` + `./bin/visor hud open
-  --backend=wlr` under Niri, sway, and hyprland; verify tongue placement,
+  --backend=wlr` under Niri, sway, and hyprland; verify tab placement,
   hover-expand, click-to-ack, click-to-dismiss, clean shutdown on SIGINT.
 
 ## Implementation order (rough)
@@ -239,8 +239,8 @@ objects are not goroutine-safe.
    `tesselslate/wl/cmd/scanner`. Vendor `xdg-shell` bindings.
 3. `internal/hud/wlr/dock.go` — connect, bind globals, dispatch loop, clean
    shutdown.
-4. `internal/hud/wlr/surface.go` + `buffer.go` — one static tongue, fixed
-   size, drawn from `render.DrawTongue`, mapped on the right edge.
+4. `internal/hud/wlr/surface.go` + `buffer.go` — one static tab, fixed
+   size, drawn from `render.DrawTab`, mapped on the right edge.
 5. Subscribe loop — create/destroy/redraw surfaces as the snapshot changes.
 6. `internal/hud/wlr/input.go` — hover-expand and click-to-ack/dismiss/jump.
 7. `cmd/visor/hud.go` — `pickBackend` case.

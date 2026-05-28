@@ -23,28 +23,28 @@ import (
 
 // Window dimensions and visibility regions.
 //
-// Instead of resizing the window between "narrow tongue" and "wide panel",
+// Instead of resizing the window between "narrow tab" and "wide panel",
 // the window is *always* expandedW wide. We anchor its right edge well
-// past the screen edge so only the leftmost tongueW pixels are visible.
+// past the screen edge so only the leftmost tabW pixels are visible.
 // Hover = slide leftward; collapse = slide back. Width never changes,
 // so the rendered image (bg + cwd text) stays intact across states.
 //
 // Layout of the rendered image (window-relative X):
 //
-//	0 .. tongueW        : pure bg color — this is what shows as the "tongue"
-//	tongueW .. textPad  : padding gap between tongue and text
+//	0 .. tabW        : pure bg color — this is what shows as the "tab"
+//	tabW .. textPad  : padding gap between tab and text
 //	textPad .. expandedW: cwd text
 const (
-	tongueW   = render.TongueW
-	tongueH   = render.TongueH
+	tabW   = render.TabW
+	tabH   = render.TabH
 	expandedW = render.ExpandedW
 	textPad   = render.TextPad
 	fontPt    = render.FontPt
 )
 
-// Wobble animation for "working" tongues. We oscillate leftward (never
+// Wobble animation for "working" tabs. We oscillate leftward (never
 // rightward — that would push the window past the screen edge) with cosine
-// easing. Each tongue gets a randomized phase so they breathe independently.
+// easing. Each tab gets a randomized phase so they breathe independently.
 const (
 	wobbleAmp    = 4.0
 	wobblePeriod = 0.9 // seconds for one full cycle
@@ -52,23 +52,23 @@ const (
 
 // alertProtrusion: when a session is attention=needs it sticks out this
 // many px past the collapsed rest position. Picked > wobbleAmp so a needs
-// tongue is unambiguously further left than any working tongue at its
+// tab is unambiguously further left than any working tab at its
 // wobble peak. The user can spot "you need to do something here" by
 // shape alone, not just color.
 const alertProtrusion = 8
 
-type tongueOpts struct {
+type tabOpts struct {
 	x, y     int    // absolute X / Y on the root (current position)
 	rightX   int    // x coordinate of the screen edge (mon.x + mon.w)
 	color    uint32 // 0xRRGGBB
 	expanded bool
 }
 
-// tongue is one X11 window representing one Claude session.
-type tongue struct {
+// tab is one X11 window representing one Claude session.
+type tab struct {
 	X    *xgbutil.XUtil
 	win  *xwindow.Window
-	opt  tongueOpts
+	opt  tabOpts
 	sess sessionView
 
 	font *truetype.Font // shared with the dock; may be nil if loadFont failed
@@ -81,7 +81,7 @@ type tongue struct {
 	expandedImg *xgraphics.Image
 
 	// overflow is set when the rendered label is wider than the panel can show.
-	// When true, hovering the tongue also spawns a tooltip window with the
+	// When true, hovering the tab also spawns a tooltip window with the
 	// full text. Recomputed on every render.
 	overflow bool
 
@@ -90,15 +90,15 @@ type tongue struct {
 	tooltipImg *xgraphics.Image
 
 	// clickFn, when non-nil, replaces the default IPC click dispatch.
-	// Used by the synthetic help tongue to toggle the help window instead.
+	// Used by the synthetic help tab to toggle the help window instead.
 	clickFn func(button byte)
 }
 
-// update repositions and recolors the tongue if anything changed.
+// update repositions and recolors the tab if anything changed.
 // Reusing the same X window across updates is much cheaper than
 // destroy+create, and avoids brief visual flicker. The rendered image
 // is regenerated only when color or text changed.
-func (t *tongue) update(s sessionView, y int, color uint32) {
+func (t *tab) update(s sessionView, y int, color uint32) {
 	prevSess := t.sess
 	prevColor := t.opt.color
 	t.sess = s
@@ -114,26 +114,26 @@ func (t *tongue) update(s sessionView, y int, color uint32) {
 	}
 }
 
-// x returns the X coordinate of the right-anchored tongue.
-func (t *tongue) x() int {
+// x returns the X coordinate of the right-anchored tab.
+func (t *tab) x() int {
 	// Cached on the window — we don't refetch screen geometry every update.
 	return t.opt.x
 }
 
-// restX returns the collapsed resting position for the tongue. Sessions
+// restX returns the collapsed resting position for the tab. Sessions
 // needing attention sit further left so they're visible at a glance even
 // without inspecting color.
-func (t *tongue) restX() int {
-	base := t.opt.rightX - tongueW
+func (t *tab) restX() int {
+	base := t.opt.rightX - tabW
 	if t.sess.Attention == "needs" {
 		return base - alertProtrusion
 	}
 	return base
 }
 
-// tick is called by the dock's animation loop. Working tongues wobble
+// tick is called by the dock's animation loop. Working tabs wobble
 // leftward; everything else snaps back to rest if it was previously moved.
-func (t *tongue) tick(now time.Time) {
+func (t *tab) tick(now time.Time) {
 	if t.opt.expanded {
 		return // hover takes priority; nothing to animate
 	}
@@ -157,21 +157,21 @@ func (t *tongue) tick(now time.Time) {
 	}
 }
 
-func newTongue(X *xgbutil.XUtil, mon monitor, opt tongueOpts) (*tongue, error) {
+func newTab(X *xgbutil.XUtil, mon monitor, opt tabOpts) (*tab, error) {
 	win, err := xwindow.Generate(X)
 	if err != nil {
 		return nil, err
 	}
 
 	opt.rightX = mon.x + mon.w
-	opt.x = opt.rightX - tongueW
+	opt.x = opt.rightX - tabW
 	bgPixel := opt.color & 0x00_ff_ff_ff // 24-bit colour (no alpha on default visual)
 
 	// The window is always expandedW wide; only its X position changes
 	// between states. The off-screen-right portion is clipped by X.
 	if err := win.CreateChecked(
 		X.RootWin(),
-		opt.x, opt.y, expandedW, tongueH,
+		opt.x, opt.y, expandedW, tabH,
 		xproto.CwBackPixel|xproto.CwOverrideRedirect|xproto.CwEventMask,
 		bgPixel,
 		1, // override-redirect = true
@@ -200,12 +200,12 @@ func newTongue(X *xgbutil.XUtil, mon monitor, opt tongueOpts) (*tongue, error) {
 		win.Destroy()
 		return nil, err
 	}
-	if err := ewmh.WmNameSet(X, win.Id, "visor-tongue"); err != nil {
+	if err := ewmh.WmNameSet(X, win.Id, "visor-tab"); err != nil {
 		win.Destroy()
 		return nil, err
 	}
 
-	t := &tongue{
+	t := &tab{
 		X:           X,
 		win:         win,
 		opt:         opt,
@@ -219,12 +219,12 @@ func newTongue(X *xgbutil.XUtil, mon monitor, opt tongueOpts) (*tongue, error) {
 
 	win.Map()
 	// First render happens once the font is wired in by the dock (it's
-	// assigned right after newTongue returns). The dock calls render()
+	// assigned right after newTab returns). The dock calls render()
 	// explicitly for the initial draw.
 	return t, nil
 }
 
-func (t *tongue) destroy() {
+func (t *tab) destroy() {
 	t.hideTooltip()
 	if t.expandedImg != nil {
 		t.expandedImg.Destroy()
@@ -243,7 +243,7 @@ const (
 	btnRight  = 3
 )
 
-func (t *tongue) onButton(X *xgbutil.XUtil, ev xevent.ButtonPressEvent) {
+func (t *tab) onButton(X *xgbutil.XUtil, ev xevent.ButtonPressEvent) {
 	if t.clickFn != nil {
 		t.clickFn(byte(ev.Detail))
 		return
@@ -270,11 +270,11 @@ func (t *tongue) onButton(X *xgbutil.XUtil, ev xevent.ButtonPressEvent) {
 	}(cmd, t.sess.ID)
 }
 
-func (t *tongue) onEnter(X *xgbutil.XUtil, ev xevent.EnterNotifyEvent) {
+func (t *tab) onEnter(X *xgbutil.XUtil, ev xevent.EnterNotifyEvent) {
 	t.setExpanded(true)
 }
 
-func (t *tongue) onLeave(X *xgbutil.XUtil, ev xevent.LeaveNotifyEvent) {
+func (t *tab) onLeave(X *xgbutil.XUtil, ev xevent.LeaveNotifyEvent) {
 	// Ignore Leave events caused by entering a child / re-entering inferior.
 	// Without this, the panel collapses spuriously when the cursor crosses
 	// internal sub-region boundaries (relevant once we add child widgets).
@@ -287,7 +287,7 @@ func (t *tongue) onLeave(X *xgbutil.XUtil, ev xevent.LeaveNotifyEvent) {
 // setExpanded slides the window between its collapsed and expanded
 // positions. Width is constant (expandedW); only X changes. The wobble
 // animation also reads this state — wobble is suppressed when expanded.
-func (t *tongue) setExpanded(expand bool) {
+func (t *tab) setExpanded(expand bool) {
 	if t.opt.expanded == expand {
 		return
 	}
@@ -320,7 +320,7 @@ const (
 // showTooltip pops up a small floating window above the expanded panel
 // containing the full label. We render once per show; on collapse it's
 // destroyed (cheaper than maintaining a hidden window).
-func (t *tongue) showTooltip() {
+func (t *tab) showTooltip() {
 	if t.font == nil || t.tooltipWin != nil {
 		return
 	}
@@ -337,7 +337,7 @@ func (t *tongue) showTooltip() {
 	// Fall back below if it would clip the top of the monitor.
 	// (We don't know the screen origin here; assume y >= 0 means OK.)
 	if y < 0 {
-		y = t.opt.y + tongueH + tipGapY
+		y = t.opt.y + tabH + tipGapY
 	}
 
 	win, err := xwindow.Generate(t.X)
@@ -389,7 +389,7 @@ func (t *tongue) showTooltip() {
 	t.tooltipImg = im
 }
 
-func (t *tongue) hideTooltip() {
+func (t *tab) hideTooltip() {
 	if t.tooltipImg != nil {
 		t.tooltipImg.Destroy()
 		t.tooltipImg = nil
@@ -403,13 +403,13 @@ func (t *tongue) hideTooltip() {
 // render generates the full expanded panel (bg color + cwd text) and
 // installs it as the window's background pixmap. Called once after
 // font assignment and whenever color or text changes.
-func (t *tongue) render() {
+func (t *tab) render() {
 	if t.expandedImg != nil {
 		t.expandedImg.Destroy()
 		t.expandedImg = nil
 	}
 
-	rt := render.DrawTongue(render.TongueState{
+	rt := render.DrawTab(render.TabState{
 		Color:    t.opt.color,
 		Label:    displayLabel(t.sess),
 		Expanded: true, // x11 uses positional window-slide; always render full opaque panel
@@ -436,11 +436,11 @@ func (t *tongue) render() {
 	im.CreatePixmap()
 	im.XDraw()
 	im.XSurfaceSet(t.win.Id)
-	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, expandedW, tongueH)
+	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, expandedW, tabH)
 	t.expandedImg = im
 }
 
-// displayLabel picks what to show inside the expanded tongue.
+// displayLabel picks what to show inside the expanded tab.
 // Prefer Claude's ai-title (a real session name); fall back to cwd then id.
 func displayLabel(s sessionView) string {
 	if s.Title != "" {

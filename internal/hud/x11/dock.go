@@ -16,18 +16,18 @@ import (
 	"github.com/nitzanz/visor/internal/hud/render"
 )
 
-// dock owns the X connection and manages a map of tongue windows keyed
+// dock owns the X connection and manages a map of tab windows keyed
 // by session ID. It selects between X events and incoming snapshot updates
 // from the visor daemon subscription.
 type dock struct {
 	X       *xgbutil.XUtil
 	mon     monitor
 	log     *slog.Logger
-	tongues map[string]*tongue // session id → window
-	font    *truetype.Font     // shared across tongues; loaded once at startup
+	tabs map[string]*tab // session id → window
+	font    *truetype.Font     // shared across tabs; loaded once at startup
 
-	// Synthetic "help" tongue pinned at slot 0; clicking it toggles helpW.
-	helpT *tongue
+	// Synthetic "help" tab pinned at slot 0; clicking it toggles helpW.
+	helpT *tab
 	helpW *helpWindow
 }
 
@@ -45,10 +45,10 @@ func newDock() (*dock, error) {
 		X:       X,
 		mon:     mon,
 		log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tongues: map[string]*tongue{},
+		tabs: map[string]*tab{},
 	}
 	if f, ferr := render.LoadFont(); ferr != nil {
-		d.log.Warn("font load failed; expanded tongues will be blank", "err", ferr)
+		d.log.Warn("font load failed; expanded tabs will be blank", "err", ferr)
 	} else {
 		d.font = f
 	}
@@ -65,16 +65,16 @@ func (d *dock) close() {
 		d.helpT.destroy()
 		d.helpT = nil
 	}
-	for _, t := range d.tongues {
+	for _, t := range d.tabs {
 		t.destroy()
 	}
 	d.X.Conn().Close()
 }
 
 func (d *dock) run() error {
-	// Create the help tongue at slot 0 before any session tongues land.
-	if err := d.makeHelpTongue(); err != nil {
-		d.log.Warn("help tongue create failed", "err", err)
+	// Create the help tab at slot 0 before any session tabs land.
+	if err := d.makeHelpTab(); err != nil {
+		d.log.Warn("help tab create failed", "err", err)
 	}
 
 	// Derive a context that is cancelled when the X event loop shuts down or a
@@ -115,29 +115,29 @@ func (d *dock) run() error {
 	}
 }
 
-// animate ticks each tongue's animation state. Currently just the wobble
-// on "working" tongues; other state-driven motion would go here too.
+// animate ticks each tab's animation state. Currently just the wobble
+// on "working" tabs; other state-driven motion would go here too.
 func (d *dock) animate(now time.Time) {
-	for _, t := range d.tongues {
+	for _, t := range d.tabs {
 		t.tick(now)
 	}
-	// The help tongue doesn't wobble (it's not a session) but tick() is a
-	// no-op for non-working tongues, so calling it is harmless.
+	// The help tab doesn't wobble (it's not a session) but tick() is a
+	// no-op for non-working tabs, so calling it is harmless.
 	if d.helpT != nil {
 		d.helpT.tick(now)
 	}
 }
 
-// makeHelpTongue creates the synthetic help tab at slot 0 and wires its
+// makeHelpTab creates the synthetic help tab at slot 0 and wires its
 // click handler to toggle the help window.
-func (d *dock) makeHelpTongue() error {
+func (d *dock) makeHelpTab() error {
 	y := d.mon.y + dockTopMargin
-	color := colorFor(helpTongueSession)
-	t, err := newTongue(d.X, d.mon, tongueOpts{y: y, color: color})
+	color := colorFor(helpTabSession)
+	t, err := newTab(d.X, d.mon, tabOpts{y: y, color: color})
 	if err != nil {
 		return err
 	}
-	t.sess = helpTongueSession
+	t.sess = helpTabSession
 	t.font = d.font
 	t.clickFn = func(button byte) {
 		// Any button toggles the help window. Using a goroutine isn't
@@ -180,17 +180,17 @@ func (d *dock) quit() {
 	d.X.Sync()
 }
 
-// dock layout constants — shared by help tongue positioning and snapshot
+// dock layout constants — shared by help tab positioning and snapshot
 // application so they stay in sync.
 const (
 	dockTopMargin = 140 // start lower on the screen for easier reach
 	dockGap       = 8
 )
 
-// applySnapshot diffs the incoming session list against current tongues
+// applySnapshot diffs the incoming session list against current tabs
 // and opens/closes/updates windows to match. Positioning is index-based:
-// session N is at y = mon.y + topMargin + (N+1)*(tongueH + gap) — slot 0
-// is reserved for the help tongue.
+// session N is at y = mon.y + topMargin + (N+1)*(tabH + gap) — slot 0
+// is reserved for the help tab.
 //
 // Dismissed sessions are hidden from the dock entirely — that's what
 // dismissing means visually. They stay in the daemon's state (and in
@@ -217,30 +217,30 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		want[s.ID] = i
 	}
 
-	// Close tongues for sessions no longer present.
-	for id, t := range d.tongues {
+	// Close tabs for sessions no longer present.
+	for id, t := range d.tabs {
 		if _, ok := want[id]; !ok {
 			t.destroy()
-			delete(d.tongues, id)
+			delete(d.tabs, id)
 		}
 	}
 
-	// Open or update one tongue per snapshot entry. Slot 0 is the help
-	// tongue, so session tongues start at slot 1.
+	// Open or update one tab per snapshot entry. Slot 0 is the help
+	// tab, so session tabs start at slot 1.
 	for i, s := range snap {
-		y := d.mon.y + topMargin + (i+1)*(tongueH+gap)
+		y := d.mon.y + topMargin + (i+1)*(tabH+gap)
 		color := colorFor(s)
-		t, ok := d.tongues[s.ID]
+		t, ok := d.tabs[s.ID]
 		if !ok {
-			nt, err := newTongue(d.X, d.mon, tongueOpts{y: y, color: color})
+			nt, err := newTab(d.X, d.mon, tabOpts{y: y, color: color})
 			if err != nil {
-				d.log.Warn("tongue create failed", "id", s.ID, "err", err)
+				d.log.Warn("tab create failed", "id", s.ID, "err", err)
 				continue
 			}
 			nt.sess = s
 			nt.font = d.font
 			nt.render() // initial paint
-			d.tongues[s.ID] = nt
+			d.tabs[s.ID] = nt
 			continue
 		}
 		t.update(s, y, color)
@@ -248,7 +248,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 	d.X.Sync()
 }
 
-// colorFor maps session state to a 0xRRGGBB tongue colour.
+// colorFor maps session state to a 0xRRGGBB tab colour.
 // It delegates to render.ColorFor so the colour scheme is shared with wlr.
 func colorFor(s sessionView) uint32 {
 	return render.ColorFor(s.Activity, s.Attention, s.Waiting)

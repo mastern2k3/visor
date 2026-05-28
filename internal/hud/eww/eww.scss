@@ -1,4 +1,4 @@
-// Visor HUD — dock-style tongues.
+// Visor HUD — dock-style tabs.
 
 * {
   all: unset;
@@ -15,9 +15,9 @@
   padding: 0;
 }
 
-// Per-tongue wrapper also alpha-0; the only opaque pixels are the bar
+// Per-tab wrapper also alpha-0; the only opaque pixels are the bar
 // and (when revealed) the panel.
-.visor-tongue {
+.visor-tab {
   background-color: rgba(0, 0, 0, 0);
 }
 
@@ -29,7 +29,7 @@
   transition: background-color 120ms ease-in-out;
 }
 
-.visor-tongue:hover .visor-bar {
+.visor-tab:hover .visor-bar {
   background-color: #ffffff;             // brighten on hover for affordance
 }
 
@@ -57,19 +57,19 @@
 
 // ---- State colors on the bar ------------------------------------------
 
-.visor-tongue.visor-act-working .visor-bar {
+.visor-tab.visor-act-working .visor-bar {
   background-color: #88c0d0;             // soft cyan — busy
 }
 
-.visor-tongue.visor-attn-needs .visor-bar {
+.visor-tab.visor-attn-needs .visor-bar {
   background-color: #ebcb8b;             // amber — wants attention
 }
 
-.visor-tongue.visor-attn-needs.visor-wait-permission .visor-bar {
+.visor-tab.visor-attn-needs.visor-wait-permission .visor-bar {
   background-color: #ff7a7a;             // red — blocked on approval
 }
 
-.visor-tongue.visor-attn-dismissed .visor-bar {
+.visor-tab.visor-attn-dismissed .visor-bar {
   background-color: #3b414e;
   opacity: 0.5;
 }
@@ -78,10 +78,10 @@
 // CSS expand on hover. The revealer above already opens for attention=needs;
 // CSS handles the rest.
 
-.visor-tongue:hover .visor-bar {
+.visor-tab:hover .visor-bar {
   background-color: #d8dee9;
 }
 
-.visor-tongue {
+.visor-tab {
   padding: 1px 0;
 }

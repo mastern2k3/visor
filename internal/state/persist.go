@@ -76,7 +76,7 @@ func LoadPersisted() (sessions []persistedSession, dismissed map[string]bool, er
 	for _, ps := range ps.Sessions {
 		// Drop entries with no identity at all — these are leftovers from
 		// older builds that accepted hook payloads missing both fields, and
-		// would render as blank, undismissable tongues in the HUD.
+		// would render as blank, undismissable tabs in the HUD.
 		if ps.ID == "" && ps.TranscriptPath == "" {
 			continue
 		}

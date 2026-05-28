@@ -12,15 +12,15 @@ import (
 )
 
 const (
-	// renderW is the width of the image produced by render.DrawTongue.
+	// renderW is the width of the image produced by render.DrawTab.
 	// bufW is wider: the surface overflows past the screen's right edge by
-	// `tongueOverflow` pixels, so wobble/alert shifts reveal more of the
-	// tongue strip leftward instead of leaving an empty gap on the right.
+	// `tabOverflow` pixels, so wobble/alert shifts reveal more of the
+	// tab strip leftward instead of leaving an empty gap on the right.
 	// The extra columns are filled by duplicating the rightmost rendered
-	// column, which extends the tongue strip (or expanded panel) rightward.
+	// column, which extends the tab strip (or expanded panel) rightward.
 	renderW = render.ExpandedW
-	bufW    = render.ExpandedW + tongueOverflow
-	bufH    = render.TongueH
+	bufW    = render.ExpandedW + tabOverflow
+	bufH    = render.TabH
 	bufStri = bufW * 4 // 4 bytes per pixel, ARGB8888
 	bufSize = bufStri * bufH
 )
@@ -132,11 +132,11 @@ func (p *shmPool) close() {
 // the destination buffer (bufW × bufH, BGRA byte order — what wl_shm
 // ARGB8888 expects on a little-endian host).
 //
-// The destination is wider than the source by `tongueOverflow` pixels. The
+// The destination is wider than the source by `tabOverflow` pixels. The
 // extra columns on the right are filled by duplicating the rightmost source
-// column, which extends whatever was at the screen edge — the tongue strip
+// column, which extends whatever was at the screen edge — the tab strip
 // when collapsed, the panel when expanded. This lets the surface overflow
-// the screen's right edge so wobble/alert shifts grow the visible tongue
+// the screen's right edge so wobble/alert shifts grow the visible tab
 // width instead of revealing empty space.
 func (b *Buffer) CopyRGBA(img *image.RGBA) {
 	src := img.Pix
@@ -160,8 +160,8 @@ func (b *Buffer) CopyRGBA(img *image.RGBA) {
 			dst[di+2] = src[si+0] // R
 			dst[di+3] = src[si+3] // A
 		}
-		// Fill the extra tongueOverflow columns by replicating the last
-		// rendered column. This extends the tongue strip rightward when
+		// Fill the extra tabOverflow columns by replicating the last
+		// rendered column. This extends the tab strip rightward when
 		// collapsed and the panel rightward when expanded.
 		last := dstRow + (renderW-1)*4
 		for x := renderW; x < bufW; x++ {

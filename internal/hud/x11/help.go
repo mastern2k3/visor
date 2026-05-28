@@ -13,15 +13,15 @@ import (
 	"github.com/jezek/xgbutil/xwindow"
 )
 
-// helpTongueID is the synthetic sessionView.ID for the help "tongue" at
+// helpTabID is the synthetic sessionView.ID for the help "tab" at
 // the top of the dock. The click dispatcher checks this constant to route
 // clicks to the help window instead of the visor IPC socket.
-const helpTongueID = "__visor_help__"
+const helpTabID = "__visor_help__"
 
-// helpTongueSession is the synthesized state for the help tab. Activity/
+// helpTabSession is the synthesized state for the help tab. Activity/
 // attention are chosen so colorFor() returns the neutral grey.
-var helpTongueSession = sessionView{
-	ID:         helpTongueID,
+var helpTabSession = sessionView{
+	ID:         helpTabID,
 	Activity:   "waiting",
 	Attention:  "ack",
 	DisplayCWD: "?  Help",
