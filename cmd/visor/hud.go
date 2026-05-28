@@ -7,6 +7,7 @@ import (
 
 	"github.com/nitzanz/visor/internal/hud"
 	"github.com/nitzanz/visor/internal/hud/eww"
+	"github.com/nitzanz/visor/internal/hud/wlr"
 	"github.com/nitzanz/visor/internal/hud/x11"
 )
 
@@ -17,6 +18,8 @@ func pickBackend(name string) (hud.Backend, error) {
 		return eww.New(), nil
 	case "x11":
 		return x11.New(), nil
+	case "wlr":
+		return wlr.New(), nil
 	default:
 		return nil, fmt.Errorf("unknown backend %q", name)
 	}
@@ -29,7 +32,7 @@ func runHUD(args []string) {
 	}
 	sub := args[0]
 	fs := flag.NewFlagSet("hud "+sub, flag.ExitOnError)
-	backendName := fs.String("backend", "eww", "HUD backend (eww)")
+	backendName := fs.String("backend", "eww", "HUD backend (eww|x11|wlr)")
 	_ = fs.Parse(args[1:])
 
 	b, err := pickBackend(*backendName)

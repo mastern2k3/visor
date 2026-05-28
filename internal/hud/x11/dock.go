@@ -1,6 +1,7 @@
 package x11
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,6 +12,8 @@ import (
 	"github.com/jezek/xgb/xproto"
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/xevent"
+
+	"github.com/nitzanz/visor/internal/hud/render"
 )
 
 // dock owns the X connection and manages a map of tongue windows keyed
@@ -44,7 +47,7 @@ func newDock() (*dock, error) {
 		log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		tongues: map[string]*tongue{},
 	}
-	if f, ferr := loadFont(); ferr != nil {
+	if f, ferr := render.LoadFont(); ferr != nil {
 		d.log.Warn("font load failed; expanded tongues will be blank", "err", ferr)
 	} else {
 		d.font = f
@@ -74,8 +77,14 @@ func (d *dock) run() error {
 		d.log.Warn("help tongue create failed", "err", err)
 	}
 
+	// Derive a context that is cancelled when the X event loop shuts down or a
+	// signal arrives. subscribeLoop uses this to exit cleanly without leaking
+	// goroutines or file descriptors.
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+
 	snaps := make(chan []sessionView, 4)
-	go subscribeLoop(snaps, d.log)
+	go subscribeLoop(ctx, snaps, d.log)
 	d.log.Info("subscribed to visor daemon")
 
 	pingBefore, pingAfter, pingQuit := xevent.MainPing(d.X)
@@ -240,17 +249,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 }
 
 // colorFor maps session state to a 0xRRGGBB tongue colour.
+// It delegates to render.ColorFor so the colour scheme is shared with wlr.
 func colorFor(s sessionView) uint32 {
-	switch {
-	case s.Attention == "needs" && s.Waiting == "permission":
-		return 0xff7a7a // red — blocked on approval
-	case s.Attention == "needs":
-		return 0xebcb8b // amber — waiting for user
-	case s.Attention == "dismissed":
-		return 0x3b414e // dim — silenced
-	case s.Activity == "working":
-		return 0x88c0d0 // cyan — busy
-	default:
-		return 0x6b7280 // grey — idle/ack
-	}
+	return render.ColorFor(s.Activity, s.Attention, s.Waiting)
 }
