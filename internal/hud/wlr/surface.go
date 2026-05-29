@@ -153,6 +153,11 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 	ls.SetListener(protocol.LayerSurfaceV1Listener{
 		Configure: func(_ any, _ protocol.LayerSurfaceV1, serial uint32, w uint32, h uint32) error {
 			ps.ls.AckConfigure(serial)
+			d.log.Debug("layer surface configure",
+				"session", ps.sessionID,
+				"want_w", render.ExpandedW+tabOverflow,
+				"want_h", render.TabH,
+				"got_w", w, "got_h", h)
 			ps.repaint(d)
 			return nil
 		},
@@ -202,7 +207,12 @@ func (s *layerSurface) repaint(d *dock) {
 	img := render.DrawTab(s.state, d.font)
 	buf.CopyRGBA(img.RGBA)
 	s.surface.Attach(buf.Wl, 0, 0)
-	s.surface.Damage(0, 0, int32(render.ExpandedW), int32(render.TabH))
+	// DamageBuffer uses buffer-local coords (no scale/transform mapping) and
+	// is the recommended request for modern clients. Cover the full buffer
+	// including the tabOverflow replication columns — otherwise compositors
+	// keep the previous buffer's pixels at cols [ExpandedW, bufW) and the
+	// "tip" shows a stale colour after state transitions.
+	s.surface.DamageBuffer(0, 0, int32(bufW), int32(render.TabH))
 	// Match input region to visible area: tab strip only when collapsed,
 	// full surface when expanded so the cursor can drift onto the panel.
 	if s.state.Expanded {
