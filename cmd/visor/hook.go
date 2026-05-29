@@ -68,6 +68,15 @@ func runHook(args []string) {
 		enriched.TmuxPane = t
 	}
 
+	// VISOR_JUMP_CMD is the launcher's escape hatch: if set, focus.Dispatch
+	// runs it instead of the built-in focus paths. Capture only on
+	// SessionStart — the launcher's intent is fixed at spawn time and we
+	// don't want a later hook (which may run after `exec`-style env
+	// changes) to clobber it.
+	if event == "SessionStart" {
+		enriched.JumpCmd = os.Getenv("VISOR_JUMP_CMD")
+	}
+
 	body, _ := json.Marshal(enriched)
 	_, err := ipc.Call(paths.Socket(), ipc.Request{
 		Cmd:  "hook",
