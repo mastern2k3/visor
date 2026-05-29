@@ -2,3 +2,5 @@
 /_refs/
 /dist/
 *.swp
+/.go/
+/.direnv/
