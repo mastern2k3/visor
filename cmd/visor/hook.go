@@ -50,8 +50,16 @@ func runHook(args []string) {
 			enriched.PID = n
 		}
 	}
-	// Only spend time detecting WM on SessionStart — other hooks don't need it.
-	if event == "SessionStart" {
+	// Detect WM on SessionStart and UserPromptSubmit. SessionStart is the
+	// natural capture point, but the daemon often comes up after claude is
+	// already running — in that case the session is first learned via a
+	// later hook and would otherwise have no WindowID, breaking `jump`.
+	// UserPromptSubmit also fires while the user is at the terminal, so
+	// re-detecting then both rescues those sessions and refreshes the id
+	// if the terminal was reopened (window ids aren't stable forever).
+	// Stop/Notification deliberately don't re-detect — the user may have
+	// switched windows by then.
+	if event == "SessionStart" || event == "UserPromptSubmit" {
 		i := wm.Detect()
 		enriched.WM = i.WM
 		enriched.WindowID = i.WindowID
