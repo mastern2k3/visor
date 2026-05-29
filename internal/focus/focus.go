@@ -34,6 +34,12 @@ type Target struct {
 	WindowID string // hex or decimal X11 window id (set when WM ∈ X11 family)
 	TmuxPane string // %N (when session ran inside tmux)
 	PID      int    // claude process pid (currently unused, kept for adapters)
+
+	// JumpCmd, when non-empty, replaces all built-in focus paths. Run via
+	// `sh -c` with session metadata exported as VISOR_* env vars.
+	JumpCmd   string
+	SessionID string // forwarded to a custom jump command as $VISOR_SESSION_ID
+	CWD       string // forwarded to a custom jump command as $VISOR_CWD
 }
 
 // Dispatch warps focus to the target. Returns the first error encountered;
@@ -42,6 +48,13 @@ type Target struct {
 func Dispatch(t Target) error {
 	var firstErr error
 	tried := 0
+
+	// Custom jump command (set by a launcher via $VISOR_JUMP_CMD at
+	// SessionStart) fully replaces the WM and tmux paths. The launcher
+	// is presumed authoritative about how to bring its session back.
+	if t.JumpCmd != "" {
+		return focusCustom(t)
+	}
 
 	if t.WindowID != "" {
 		tried++
