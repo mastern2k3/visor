@@ -23,6 +23,10 @@ type Enriched struct {
 	WM       string `json:"wm,omitempty"`
 	WindowID string `json:"window_id,omitempty"`
 	TmuxPane string `json:"tmux_pane,omitempty"`
+	// JumpCmd is the value of $VISOR_JUMP_CMD captured at SessionStart.
+	// When non-empty, focus.Dispatch runs this via `sh -c` instead of the
+	// built-in WM and tmux focus paths.
+	JumpCmd string `json:"jump_cmd,omitempty"`
 	// Matcher is the hook-config matcher string we registered with, used to
 	// distinguish Notification subtypes (permission_prompt vs idle_prompt)
 	// since Claude doesn't put that in the payload.
