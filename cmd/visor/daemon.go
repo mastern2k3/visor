@@ -108,10 +108,13 @@ func makeHandler(store *state.Store, log *slog.Logger) ipc.Handler {
 			// Dispatch in a goroutine so a slow X conn doesn't block the IPC reply.
 			go func() {
 				t := focus.Target{
-					WM:       sess.WM,
-					WindowID: sess.WindowID,
-					TmuxPane: sess.TmuxPane,
-					PID:      sess.PID,
+					WM:        sess.WM,
+					WindowID:  sess.WindowID,
+					TmuxPane:  sess.TmuxPane,
+					PID:       sess.PID,
+					SessionID: sess.ID,
+					CWD:       sess.CWD,
+					JumpCmd:   sess.JumpCmd,
 				}
 				if err := focus.Dispatch(t); err != nil {
 					log.Warn("jump", "id", req.ID, "err", err)
