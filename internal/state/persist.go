@@ -33,8 +33,15 @@ type persistedSession struct {
 	WM             string    `json:"wm,omitempty"`
 	WindowID       string    `json:"window_id,omitempty"`
 	TmuxPane       string    `json:"tmux_pane,omitempty"`
+	JumpCmd        string    `json:"jump_cmd,omitempty"`
 	FirstSeen      time.Time `json:"first_seen,omitempty"`
 	Dismissed      bool      `json:"dismissed,omitempty"`
+	// Ended marks a session whose SessionEnd hook has fired. We keep the
+	// tombstone so the next daemon startup doesn't re-surface the tab when
+	// discovery walks the projects directory and finds the transcript still
+	// on disk. Tombstones self-clean when the transcript is deleted (the
+	// path-stat check below drops them).
+	Ended bool `json:"ended,omitempty"`
 }
 
 // persistedState is what we serialize to disk.

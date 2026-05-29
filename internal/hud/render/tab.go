@@ -88,26 +88,33 @@ func DrawTab(s TabState, font *truetype.Font) TabImage {
 	// text starts at TextPad and must end before the tab strip starts.
 	// For !TabRight, text starts at TextPad past the tab strip.
 	fg := contrastFG(bg)
-	var textX, rightLimit int
+	// clip is the rectangle freetype is allowed to paint into — strictly the
+	// panel region, never the tab strip. Without this, long labels paint
+	// glyphs into the tab strip at cols near the right edge; the wlr backend
+	// then replicates that rightmost column into the tabOverflow tip and the
+	// user sees a text-colored sliver next to a bg-colored tab.
+	textX := TextPad
+	var clip image.Rectangle
+	var rightLimit int
 	if s.TabRight {
-		textX = TextPad
+		clip = image.Rect(0, 0, ExpandedW-TabW, TabH)
 		rightLimit = ExpandedW - TabW - textRightPad
 	} else {
-		textX = TextPad
+		clip = image.Rect(TabW, 0, ExpandedW, TabH)
 		rightLimit = ExpandedW - textRightPad
 	}
-	out.Overflow = drawText(img, font, FontPt, textX, TextYBaseline, fg, s.Label, rightLimit)
+	out.Overflow = drawText(img, font, FontPt, textX, TextYBaseline, fg, s.Label, clip, rightLimit)
 	return out
 }
 
 // drawText renders `text` into img using freetype directly. Returns true if
 // the rendered text width exceeded rightLimit (pixels from x=0).
-func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline int, fg color.Color, text string, rightLimit int) (overflow bool) {
+func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline int, fg color.Color, text string, clip image.Rectangle, rightLimit int) (overflow bool) {
 	c := freetype.NewContext()
 	c.SetDPI(72)
 	c.SetFont(font)
 	c.SetFontSize(ptSize)
-	c.SetClip(img.Bounds())
+	c.SetClip(clip)
 	c.SetDst(img)
 	c.SetSrc(&image.Uniform{C: fg})
 

@@ -86,12 +86,16 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 
 	switch event {
 	case "SessionStart":
-		// metadata already captured above
+		// JumpCmd is captured by the hook CLI from $VISOR_JUMP_CMD and is
+		// only meaningful at session creation. Set unconditionally here
+		// (including to "") so a SessionStart replay reflects current intent.
+		sess.JumpCmd = p.JumpCmd
 	case "SessionEnd":
-		delete(s.sessions, sess.ID)
-		if sess.TranscriptPath != "" {
-			delete(s.byPath, sess.TranscriptPath)
-		}
+		// Keep the entry as a tombstone — Snapshot() filters Ended sessions
+		// out so the HUD tab disappears, but byPath still resolves so
+		// discovery's next backfill won't resurrect a fresh session from
+		// the on-disk transcript after a daemon restart.
+		sess.Ended = true
 	case "UserPromptSubmit":
 		s.transition(sess, transcript.ActivityWorking, WaitingNone)
 	case "Stop":

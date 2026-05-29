@@ -67,6 +67,9 @@ type Session struct {
 	WindowID       string    `json:"window_id,omitempty"` // WM-specific locator
 	WM             string    `json:"wm,omitempty"`        // "niri" | "sway" | "hypr" | "x11" | "tmux"
 	TmuxPane       string    `json:"tmux_pane,omitempty"`
+	// JumpCmd is the launcher-declared custom jump command captured at
+	// SessionStart from $VISOR_JUMP_CMD. Empty for ordinary sessions.
+	JumpCmd string `json:"jump_cmd,omitempty"`
 
 	// Title sources (both come from the JSONL; customTitle wins when set).
 	AiTitle     string `json:"ai_title,omitempty"`
@@ -82,6 +85,12 @@ type Session struct {
 	FirstSeen   time.Time `json:"first_seen"`
 	LastUpdate  time.Time `json:"last_update"`
 	LastWaiting time.Time `json:"last_waiting,omitempty"`
+
+	// Ended is true once SessionEnd has fired. Ended sessions stay in the
+	// store as tombstones — excluded from Snapshot (so they vanish from the
+	// HUD) but kept so discovery's UpsertByPath returns the existing entry
+	// instead of resurrecting a fresh tab from the on-disk transcript.
+	Ended bool `json:"-"`
 }
 
 // Snapshot is the public view (used by ctl + HUD).
@@ -160,7 +169,9 @@ func NewStore() *Store {
 			WM:             p.WM,
 			WindowID:       p.WindowID,
 			TmuxPane:       p.TmuxPane,
+			JumpCmd:        p.JumpCmd,
 			FirstSeen:      p.FirstSeen,
+			Ended:          p.Ended,
 		}
 		if sess.FirstSeen.IsZero() {
 			sess.FirstSeen = time.Now()
@@ -196,8 +207,10 @@ func (s *Store) snapshotPersist() []persistedSession {
 			WM:             sess.WM,
 			WindowID:       sess.WindowID,
 			TmuxPane:       sess.TmuxPane,
+			JumpCmd:        sess.JumpCmd,
 			FirstSeen:      sess.FirstSeen,
 			Dismissed:      sess.Attention == AttentionDismiss,
+			Ended:          sess.Ended,
 		})
 	}
 	return out
@@ -373,6 +386,9 @@ func (s *Store) Snapshot() []Snapshot {
 	// is randomized in Go, so an unsorted slice makes tabs swap positions
 	// on every refresh.
 	for _, sess := range s.sessions {
+		if sess.Ended {
+			continue
+		}
 		out = append(out, Snapshot{
 			ID:             sess.ID,
 			TranscriptPath: sess.TranscriptPath,
