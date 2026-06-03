@@ -35,9 +35,9 @@ func toDisplayCWD(p string) string {
 type Attention int
 
 const (
-	AttentionAck      Attention = iota // user has acknowledged the current state
-	AttentionNeeds                     // session wants attention
-	AttentionDismiss                   // silenced until activity changes
+	AttentionAck     Attention = iota // user has acknowledged the current state
+	AttentionNeeds                    // session wants attention
+	AttentionDismiss                  // silenced until activity changes
 )
 
 func (a Attention) String() string {
@@ -60,13 +60,13 @@ const (
 
 // Session is one Claude Code session as the daemon understands it.
 type Session struct {
-	ID             string    `json:"id"`
-	TranscriptPath string    `json:"transcript_path"`
-	CWD            string    `json:"cwd,omitempty"`
-	PID            int       `json:"pid,omitempty"`
-	WindowID       string    `json:"window_id,omitempty"` // WM-specific locator
-	WM             string    `json:"wm,omitempty"`        // "niri" | "sway" | "hypr" | "x11" | "tmux"
-	TmuxPane       string    `json:"tmux_pane,omitempty"`
+	ID             string `json:"id"`
+	TranscriptPath string `json:"transcript_path"`
+	CWD            string `json:"cwd,omitempty"`
+	PID            int    `json:"pid,omitempty"`
+	WindowID       string `json:"window_id,omitempty"` // WM-specific locator
+	WM             string `json:"wm,omitempty"`        // "niri" | "sway" | "hypr" | "x11" | "tmux"
+	TmuxPane       string `json:"tmux_pane,omitempty"`
 	// JumpCmd is the launcher-declared custom jump command captured at
 	// SessionStart from $VISOR_JUMP_CMD. Empty for ordinary sessions.
 	JumpCmd string `json:"jump_cmd,omitempty"`
@@ -107,22 +107,22 @@ type Session struct {
 // Fields are non-omitempty by design — the HUD's yuck expressions need
 // every key present (null access on missing keys is fragile in simplexpr).
 type Snapshot struct {
-	ID             string    `json:"id"`
-	TranscriptPath string    `json:"transcript_path"`
-	CWD            string    `json:"cwd"`
-	DisplayCWD     string    `json:"display_cwd"` // CWD with $HOME → "~"
-	PID            int       `json:"pid"`
-	WM             string    `json:"wm"`
-	WindowID       string    `json:"window_id"`
-	TmuxPane       string    `json:"tmux_pane"`
-	Title          string    `json:"title"`
-	Activity       string    `json:"activity"`
-	Waiting        string    `json:"waiting"`
+	ID                string    `json:"id"`
+	TranscriptPath    string    `json:"transcript_path"`
+	CWD               string    `json:"cwd"`
+	DisplayCWD        string    `json:"display_cwd"` // CWD with $HOME → "~"
+	PID               int       `json:"pid"`
+	WM                string    `json:"wm"`
+	WindowID          string    `json:"window_id"`
+	TmuxPane          string    `json:"tmux_pane"`
+	Title             string    `json:"title"`
+	Activity          string    `json:"activity"`
+	Waiting           string    `json:"waiting"`
 	Attention         string    `json:"attention"`
 	BackgroundRunning int       `json:"background_running"`
 	BackgroundOutcome string    `json:"background_outcome"`
 	FirstSeen         time.Time `json:"first_seen"`
-	LastUpdate     time.Time `json:"last_update"`
+	LastUpdate        time.Time `json:"last_update"`
 }
 
 // resolvedTitle is what the HUD should display. Custom (user-set) beats
@@ -437,22 +437,22 @@ func (s *Store) Snapshot() []Snapshot {
 			continue
 		}
 		out = append(out, Snapshot{
-			ID:             sess.ID,
-			TranscriptPath: sess.TranscriptPath,
-			CWD:            sess.CWD,
-			DisplayCWD:     toDisplayCWD(sess.CWD),
-			PID:            sess.PID,
-			WM:             sess.WM,
-			WindowID:       sess.WindowID,
-			TmuxPane:       sess.TmuxPane,
-			Title:          sess.resolvedTitle(),
-			Activity:       sess.Activity.String(),
-			Waiting:        waitingString(sess.Waiting),
+			ID:                sess.ID,
+			TranscriptPath:    sess.TranscriptPath,
+			CWD:               sess.CWD,
+			DisplayCWD:        toDisplayCWD(sess.CWD),
+			PID:               sess.PID,
+			WM:                sess.WM,
+			WindowID:          sess.WindowID,
+			TmuxPane:          sess.TmuxPane,
+			Title:             sess.resolvedTitle(),
+			Activity:          sess.Activity.String(),
+			Waiting:           waitingString(sess.Waiting),
 			Attention:         sess.Attention.String(),
 			BackgroundRunning: len(sess.BackgroundRunning),
 			BackgroundOutcome: sess.BackgroundOutcome,
 			FirstSeen:         sess.FirstSeen,
-			LastUpdate:     sess.LastUpdate,
+			LastUpdate:        sess.LastUpdate,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
