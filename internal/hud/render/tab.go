@@ -11,8 +11,8 @@ import (
 
 // Shared with both backends. Keep in sync with the x11 backend's window sizing.
 const (
-	TabW   = 10  // visible width when collapsed
-	TabH   = 36  // window height
+	TabW      = 10  // visible width when collapsed
+	TabH      = 36  // window height
 	ExpandedW = 300 // visible width when hovered
 	TextPad   = 18  // x where the cwd label begins
 	FontPt    = 13.5
@@ -21,6 +21,18 @@ const (
 	TextYBaseline = 24
 
 	textRightPad = 8 // px reserved between text right-edge and panel edge for visual breathing room
+
+	dotRadius     = 2 // dot is 2*dotRadius+1 px across
+	dotInset      = 2 // px from the strip's left edge to the dot's left edge
+	dotTop        = 3 // y of the topmost dot's top edge
+	dotGap        = 3 // vertical gap between stacked dots
+	dotMaxRunning = 3 // cap on running dots drawn
+)
+
+const (
+	dotRunning uint32 = 0x8be0d0 // teal — task in flight
+	dotDone    uint32 = 0xa3d977 // green — batch completed ok
+	dotFailed  uint32 = 0xff7a7a // red — batch had a failure
 )
 
 // TabState is the subset of session data the renderer needs.
@@ -36,6 +48,11 @@ type TabState struct {
 	// Used by the wlr backend, whose right-anchored layer surface puts buffer
 	// x=ExpandedW-1 at the screen's right edge.
 	TabRight bool
+	// Background work axis. BackgroundRunning > 0 draws that many running
+	// dots (capped at dotMaxRunning). When 0 and BackgroundOutcome is set,
+	// a single outcome dot is drawn instead.
+	BackgroundRunning int
+	BackgroundOutcome string // "" | "done" | "failed"
 }
 
 // TabImage is the rendered output plus metadata x11/wlr both need.
@@ -76,10 +93,20 @@ func DrawTab(s TabState, font *truetype.Font) TabImage {
 		// the desktop through it — Wayland analogue to the x11 window-slide.
 		transparent := color.RGBA{0, 0, 0, 0}
 		draw.Draw(img, panelRect, &image.Uniform{C: transparent}, image.Point{}, draw.Src)
+		stripLeftX := 0
+		if s.TabRight {
+			stripLeftX = ExpandedW - TabW
+		}
+		drawBackgroundDots(img, s, stripLeftX, bg)
 		return TabImage{RGBA: img}
 	}
 
 	out := TabImage{RGBA: img}
+	stripLeftX := 0
+	if s.TabRight {
+		stripLeftX = ExpandedW - TabW
+	}
+	drawBackgroundDots(img, s, stripLeftX, bg)
 	if font == nil || s.Label == "" {
 		return out
 	}
@@ -105,6 +132,57 @@ func DrawTab(s TabState, font *truetype.Font) TabImage {
 	}
 	out.Overflow = drawText(img, font, FontPt, textX, TextYBaseline, fg, s.Label, clip, rightLimit)
 	return out
+}
+
+// fillDot paints a filled circle of radius dotRadius centered at (cx, cy)
+// with a 1px contrasting outline. No anti-aliasing — at radius 2 a plain
+// distance test reads cleanly. outline is drawn first (as a slightly larger
+// disc), then the fill on top.
+func fillDot(img *image.RGBA, cx, cy int, fill, outline color.RGBA) {
+	r := dotRadius
+	for dy := -r - 1; dy <= r+1; dy++ {
+		for dx := -r - 1; dx <= r+1; dx++ {
+			d2 := dx*dx + dy*dy
+			var c color.RGBA
+			switch {
+			case d2 <= r*r:
+				c = fill
+			case d2 <= (r+1)*(r+1):
+				c = outline
+			default:
+				continue
+			}
+			img.SetRGBA(cx+dx, cy+dy, c)
+		}
+	}
+}
+
+// drawBackgroundDots paints running/outcome dots onto the visible tip strip.
+// stripLeftX is the buffer x of the strip's left edge (0 for x11; ExpandedW-TabW
+// for wlr). bg is the strip color, used to pick a contrasting outline.
+func drawBackgroundDots(img *image.RGBA, s TabState, stripLeftX int, bg color.RGBA) {
+	outline := contrastFG(bg)
+	cx := stripLeftX + dotInset + dotRadius
+	draw := func(i int, packed uint32) {
+		cy := dotTop + dotRadius + i*(2*dotRadius+1+dotGap)
+		fillDot(img, cx, cy, unpackRGBA(packed), outline)
+	}
+	if s.BackgroundRunning > 0 {
+		n := s.BackgroundRunning
+		if n > dotMaxRunning {
+			n = dotMaxRunning
+		}
+		for i := 0; i < n; i++ {
+			draw(i, dotRunning)
+		}
+		return
+	}
+	switch s.BackgroundOutcome {
+	case "done":
+		draw(0, dotDone)
+	case "failed":
+		draw(0, dotFailed)
+	}
 }
 
 // drawText renders `text` into img using freetype directly. Returns true if
