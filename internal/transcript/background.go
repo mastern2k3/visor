@@ -1,13 +1,17 @@
 package transcript
 
-import "regexp"
+import (
+	"encoding/json"
+	"regexp"
+	"strings"
+)
 
 // BackgroundKind distinguishes a task launch from a task completion.
 type BackgroundKind int
 
 const (
 	BackgroundStart  BackgroundKind = iota
-	BackgroundFinish BackgroundKind = iota
+	BackgroundFinish                // Fix 3: drop redundant = iota
 )
 
 // BackgroundEvent is one background-task lifecycle marker found in the
@@ -23,9 +27,36 @@ type BackgroundEvent struct {
 // the background. The id is alphanumeric (Claude uses a short "bkg…" token).
 var startRe = regexp.MustCompile(`Command running in background with ID: ([A-Za-z0-9]+)`)
 
-// taskIDRe / statusRe extract fields from a <task-notification> finish block.
+// taskIDRe / statusRe extract all fields from <task-notification> finish blocks.
 var taskIDRe = regexp.MustCompile(`<task-id>([^<]+)</task-id>`)
 var statusRe = regexp.MustCompile(`<status>([^<]+)</status>`)
+
+// toolResultText extracts the human-readable text from a tool_result block,
+// whose `content` is polymorphic: a bare JSON string, or an array of
+// content blocks (each possibly carrying its own Text). Mirrors DecodeContent.
+func toolResultText(b Block) string {
+	if b.Text != "" {
+		return b.Text
+	}
+	if len(b.ContentRM) == 0 {
+		return ""
+	}
+	// Try bare JSON string first.
+	var s string
+	if err := json.Unmarshal(b.ContentRM, &s); err == nil {
+		return s
+	}
+	// Try array of content blocks.
+	var blocks []Block
+	if err := json.Unmarshal(b.ContentRM, &blocks); err == nil {
+		var out string
+		for _, ib := range blocks {
+			out += ib.Text
+		}
+		return out
+	}
+	return ""
+}
 
 // ScanBackground walks parsed lines (any order) and returns the background
 // lifecycle events found in user-line content. Both markers live inside
@@ -41,28 +72,30 @@ func ScanBackground(lines []Line) []BackgroundEvent {
 			continue
 		}
 		for _, b := range DecodeContent(ln.Message.Content) {
-			text := b.Text
+			var text string
 			if b.Type == "tool_result" {
-				// tool_result content is itself polymorphic; the human-readable
-				// string lands in Block.Text when content is a bare string, or
-				// in ContentRM otherwise. Check both.
-				if text == "" && len(b.ContentRM) > 0 {
-					text = string(b.ContentRM)
-				}
+				// Fix 1: properly decode polymorphic tool_result content.
+				text = toolResultText(b)
+			} else {
+				text = b.Text
 			}
 			if text == "" {
 				continue
 			}
 			if m := startRe.FindStringSubmatch(text); m != nil {
-				out = append(out, BackgroundEvent{TaskID: m[1], Kind: BackgroundStart})
+				out = append(out, BackgroundEvent{TaskID: strings.TrimSpace(m[1]), Kind: BackgroundStart})
 				continue
 			}
-			if id := taskIDRe.FindStringSubmatch(text); id != nil {
+			// Fix 2: find ALL task-notification blocks in the text.
+			ids := taskIDRe.FindAllStringSubmatch(text, -1)
+			statuses := statusRe.FindAllStringSubmatch(text, -1)
+			for i, id := range ids {
+				taskID := strings.TrimSpace(id[1]) // Fix 4: trim captured groups
 				failed := true
-				if st := statusRe.FindStringSubmatch(text); st != nil && st[1] == "completed" {
+				if i < len(statuses) && strings.TrimSpace(statuses[i][1]) == "completed" {
 					failed = false
 				}
-				out = append(out, BackgroundEvent{TaskID: id[1], Kind: BackgroundFinish, Failed: failed})
+				out = append(out, BackgroundEvent{TaskID: taskID, Kind: BackgroundFinish, Failed: failed})
 			}
 		}
 	}
