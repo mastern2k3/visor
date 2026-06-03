@@ -118,8 +118,10 @@ type Snapshot struct {
 	Title          string    `json:"title"`
 	Activity       string    `json:"activity"`
 	Waiting        string    `json:"waiting"`
-	Attention      string    `json:"attention"`
-	FirstSeen      time.Time `json:"first_seen"`
+	Attention         string    `json:"attention"`
+	BackgroundRunning int       `json:"background_running"`
+	BackgroundOutcome string    `json:"background_outcome"`
+	FirstSeen         time.Time `json:"first_seen"`
 	LastUpdate     time.Time `json:"last_update"`
 }
 
@@ -446,8 +448,10 @@ func (s *Store) Snapshot() []Snapshot {
 			Title:          sess.resolvedTitle(),
 			Activity:       sess.Activity.String(),
 			Waiting:        waitingString(sess.Waiting),
-			Attention:      sess.Attention.String(),
-			FirstSeen:      sess.FirstSeen,
+			Attention:         sess.Attention.String(),
+			BackgroundRunning: len(sess.BackgroundRunning),
+			BackgroundOutcome: sess.BackgroundOutcome,
+			FirstSeen:         sess.FirstSeen,
 			LastUpdate:     sess.LastUpdate,
 		})
 	}

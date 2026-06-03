@@ -79,3 +79,15 @@ func TestApplyBackground_BackfillSuppressesOutcome(t *testing.T) {
 		t.Errorf("running=%d, want 0", len(s.BackgroundRunning))
 	}
 }
+
+func TestHudDigest_ChangesWithBackground(t *testing.T) {
+	base := []Snapshot{{ID: "x", Activity: "waiting"}}
+	withRunning := []Snapshot{{ID: "x", Activity: "waiting", BackgroundRunning: 2}}
+	withOutcome := []Snapshot{{ID: "x", Activity: "waiting", BackgroundOutcome: "failed"}}
+	if hudDigest(base) == hudDigest(withRunning) {
+		t.Error("digest ignored background_running")
+	}
+	if hudDigest(base) == hudDigest(withOutcome) {
+		t.Error("digest ignored background_outcome")
+	}
+}

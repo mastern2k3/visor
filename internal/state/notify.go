@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"sync"
 )
 
@@ -100,6 +101,11 @@ func hudDigest(snaps []Snapshot) string {
 		h.Write([]byte(s.DisplayCWD))
 		h.Write([]byte{0})
 		h.Write([]byte(s.Title))
+		h.Write([]byte{0})
+		h.Write([]byte(strconv.Itoa(s.BackgroundRunning)))
+		h.Write([]byte{0})
+		h.Write([]byte(s.BackgroundOutcome))
+		h.Write([]byte{0})
 		h.Write([]byte{1})
 	}
 	return hex.EncodeToString(h.Sum(nil))
