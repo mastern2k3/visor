@@ -79,6 +79,15 @@ type Session struct {
 	Waiting   Waiting                    `json:"-"`
 	Attention Attention                  `json:"-"`
 
+	// Background work axis (objective, derived from JSONL; never persisted).
+	// BackgroundRunning is the set of in-flight background task IDs.
+	// BackgroundOutcome is the result of the last finished batch:
+	// "" | "done" | "failed". batchFailed accumulates failures within the
+	// current batch and resets when the running set goes empty→non-empty.
+	BackgroundRunning map[string]bool `json:"-"`
+	BackgroundOutcome string          `json:"-"`
+	batchFailed       bool
+
 	// Tailer cursor.
 	Offset int64 `json:"-"`
 
@@ -267,6 +276,39 @@ func (s *Store) adoptID(sess *Session, realID string) {
 	}
 }
 
+// applyBackground folds background lifecycle events into the session's
+// Background axis. On backfill (isInitial) the net running count is computed
+// but no outcome dot is surfaced — historical completions aren't news.
+func (sess *Session) applyBackground(events []transcript.BackgroundEvent, isInitial bool) {
+	for _, e := range events {
+		switch e.Kind {
+		case transcript.BackgroundStart:
+			if len(sess.BackgroundRunning) == 0 {
+				// New batch begins: reset accumulators and clear any
+				// lingering outcome from the previous batch.
+				sess.batchFailed = false
+				sess.BackgroundOutcome = ""
+			}
+			if sess.BackgroundRunning == nil {
+				sess.BackgroundRunning = map[string]bool{}
+			}
+			sess.BackgroundRunning[e.TaskID] = true
+		case transcript.BackgroundFinish:
+			if e.Failed {
+				sess.batchFailed = true
+			}
+			delete(sess.BackgroundRunning, e.TaskID)
+			if len(sess.BackgroundRunning) == 0 && !isInitial {
+				if sess.batchFailed {
+					sess.BackgroundOutcome = "failed"
+				} else {
+					sess.BackgroundOutcome = "done"
+				}
+			}
+		}
+	}
+}
+
 // ApplyTranscript folds parsed transcript lines into the session, returning
 // whether the activity changed (caller decides whether to re-arm attention).
 // When isInitial is true, transitions don't arm attention (backfill shouldn't nag).
@@ -312,6 +354,9 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 		if newAct != transcript.ActivityUnknown {
 			sess.Activity = newAct
 		}
+	}
+	if len(lines) > 0 {
+		sess.applyBackground(transcript.ScanBackground(lines), isInitial)
 	}
 	// Live transcript appends on a dismissed session clear the dismissal —
 	// new activity means the user is engaging again. Backfill (isInitial)

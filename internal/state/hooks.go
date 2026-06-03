@@ -97,6 +97,7 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 		// the on-disk transcript after a daemon restart.
 		sess.Ended = true
 	case "UserPromptSubmit":
+		sess.BackgroundOutcome = ""
 		s.transition(sess, transcript.ActivityWorking, WaitingNone)
 	case "Stop":
 		s.transition(sess, transcript.ActivityWaitingUser, WaitingUser)
