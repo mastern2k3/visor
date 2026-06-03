@@ -35,9 +35,9 @@ func toDisplayCWD(p string) string {
 type Attention int
 
 const (
-	AttentionAck      Attention = iota // user has acknowledged the current state
-	AttentionNeeds                     // session wants attention
-	AttentionDismiss                   // silenced until activity changes
+	AttentionAck     Attention = iota // user has acknowledged the current state
+	AttentionNeeds                    // session wants attention
+	AttentionDismiss                  // silenced until activity changes
 )
 
 func (a Attention) String() string {
@@ -60,13 +60,13 @@ const (
 
 // Session is one Claude Code session as the daemon understands it.
 type Session struct {
-	ID             string    `json:"id"`
-	TranscriptPath string    `json:"transcript_path"`
-	CWD            string    `json:"cwd,omitempty"`
-	PID            int       `json:"pid,omitempty"`
-	WindowID       string    `json:"window_id,omitempty"` // WM-specific locator
-	WM             string    `json:"wm,omitempty"`        // "niri" | "sway" | "hypr" | "x11" | "tmux"
-	TmuxPane       string    `json:"tmux_pane,omitempty"`
+	ID             string `json:"id"`
+	TranscriptPath string `json:"transcript_path"`
+	CWD            string `json:"cwd,omitempty"`
+	PID            int    `json:"pid,omitempty"`
+	WindowID       string `json:"window_id,omitempty"` // WM-specific locator
+	WM             string `json:"wm,omitempty"`        // "niri" | "sway" | "hypr" | "x11" | "tmux"
+	TmuxPane       string `json:"tmux_pane,omitempty"`
 	// JumpCmd is the launcher-declared custom jump command captured at
 	// SessionStart from $VISOR_JUMP_CMD. Empty for ordinary sessions.
 	JumpCmd string `json:"jump_cmd,omitempty"`
@@ -78,6 +78,15 @@ type Session struct {
 	Activity  transcript.SessionActivity `json:"-"`
 	Waiting   Waiting                    `json:"-"`
 	Attention Attention                  `json:"-"`
+
+	// Background work axis (objective, derived from JSONL; never persisted).
+	// BackgroundRunning is the set of in-flight background task IDs.
+	// BackgroundOutcome is the result of the last finished batch:
+	// "" | "done" | "failed". batchFailed accumulates failures within the
+	// current batch and resets when the running set goes empty→non-empty.
+	BackgroundRunning map[string]bool `json:"-"`
+	BackgroundOutcome string          `json:"-"`
+	batchFailed       bool
 
 	// Tailer cursor.
 	Offset int64 `json:"-"`
@@ -98,20 +107,22 @@ type Session struct {
 // Fields are non-omitempty by design — the HUD's yuck expressions need
 // every key present (null access on missing keys is fragile in simplexpr).
 type Snapshot struct {
-	ID             string    `json:"id"`
-	TranscriptPath string    `json:"transcript_path"`
-	CWD            string    `json:"cwd"`
-	DisplayCWD     string    `json:"display_cwd"` // CWD with $HOME → "~"
-	PID            int       `json:"pid"`
-	WM             string    `json:"wm"`
-	WindowID       string    `json:"window_id"`
-	TmuxPane       string    `json:"tmux_pane"`
-	Title          string    `json:"title"`
-	Activity       string    `json:"activity"`
-	Waiting        string    `json:"waiting"`
-	Attention      string    `json:"attention"`
-	FirstSeen      time.Time `json:"first_seen"`
-	LastUpdate     time.Time `json:"last_update"`
+	ID                string    `json:"id"`
+	TranscriptPath    string    `json:"transcript_path"`
+	CWD               string    `json:"cwd"`
+	DisplayCWD        string    `json:"display_cwd"` // CWD with $HOME → "~"
+	PID               int       `json:"pid"`
+	WM                string    `json:"wm"`
+	WindowID          string    `json:"window_id"`
+	TmuxPane          string    `json:"tmux_pane"`
+	Title             string    `json:"title"`
+	Activity          string    `json:"activity"`
+	Waiting           string    `json:"waiting"`
+	Attention         string    `json:"attention"`
+	BackgroundRunning int       `json:"background_running"`
+	BackgroundOutcome string    `json:"background_outcome"`
+	FirstSeen         time.Time `json:"first_seen"`
+	LastUpdate        time.Time `json:"last_update"`
 }
 
 // resolvedTitle is what the HUD should display. Custom (user-set) beats
@@ -267,6 +278,39 @@ func (s *Store) adoptID(sess *Session, realID string) {
 	}
 }
 
+// applyBackground folds background lifecycle events into the session's
+// Background axis. On backfill (isInitial) the net running count is computed
+// but no outcome dot is surfaced — historical completions aren't news.
+func (sess *Session) applyBackground(events []transcript.BackgroundEvent, isInitial bool) {
+	for _, e := range events {
+		switch e.Kind {
+		case transcript.BackgroundStart:
+			if len(sess.BackgroundRunning) == 0 {
+				// New batch begins: reset accumulators and clear any
+				// lingering outcome from the previous batch.
+				sess.batchFailed = false
+				sess.BackgroundOutcome = ""
+			}
+			if sess.BackgroundRunning == nil {
+				sess.BackgroundRunning = map[string]bool{}
+			}
+			sess.BackgroundRunning[e.TaskID] = true
+		case transcript.BackgroundFinish:
+			if e.Failed {
+				sess.batchFailed = true
+			}
+			delete(sess.BackgroundRunning, e.TaskID)
+			if len(sess.BackgroundRunning) == 0 && !isInitial {
+				if sess.batchFailed {
+					sess.BackgroundOutcome = "failed"
+				} else {
+					sess.BackgroundOutcome = "done"
+				}
+			}
+		}
+	}
+}
+
 // ApplyTranscript folds parsed transcript lines into the session, returning
 // whether the activity changed (caller decides whether to re-arm attention).
 // When isInitial is true, transitions don't arm attention (backfill shouldn't nag).
@@ -312,6 +356,9 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 		if newAct != transcript.ActivityUnknown {
 			sess.Activity = newAct
 		}
+	}
+	if len(lines) > 0 {
+		sess.applyBackground(transcript.ScanBackground(lines), isInitial)
 	}
 	// Live transcript appends on a dismissed session clear the dismissal —
 	// new activity means the user is engaging again. Backfill (isInitial)
@@ -390,20 +437,22 @@ func (s *Store) Snapshot() []Snapshot {
 			continue
 		}
 		out = append(out, Snapshot{
-			ID:             sess.ID,
-			TranscriptPath: sess.TranscriptPath,
-			CWD:            sess.CWD,
-			DisplayCWD:     toDisplayCWD(sess.CWD),
-			PID:            sess.PID,
-			WM:             sess.WM,
-			WindowID:       sess.WindowID,
-			TmuxPane:       sess.TmuxPane,
-			Title:          sess.resolvedTitle(),
-			Activity:       sess.Activity.String(),
-			Waiting:        waitingString(sess.Waiting),
-			Attention:      sess.Attention.String(),
-			FirstSeen:      sess.FirstSeen,
-			LastUpdate:     sess.LastUpdate,
+			ID:                sess.ID,
+			TranscriptPath:    sess.TranscriptPath,
+			CWD:               sess.CWD,
+			DisplayCWD:        toDisplayCWD(sess.CWD),
+			PID:               sess.PID,
+			WM:                sess.WM,
+			WindowID:          sess.WindowID,
+			TmuxPane:          sess.TmuxPane,
+			Title:             sess.resolvedTitle(),
+			Activity:          sess.Activity.String(),
+			Waiting:           waitingString(sess.Waiting),
+			Attention:         sess.Attention.String(),
+			BackgroundRunning: len(sess.BackgroundRunning),
+			BackgroundOutcome: sess.BackgroundOutcome,
+			FirstSeen:         sess.FirstSeen,
+			LastUpdate:        sess.LastUpdate,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

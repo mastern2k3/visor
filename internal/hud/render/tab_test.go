@@ -94,6 +94,67 @@ func TestDrawTab_TabRight_ExpandedHasOpaqueFull(t *testing.T) {
 	}
 }
 
+func TestDrawTab_RunningDotsTeal(t *testing.T) {
+	// Collapsed amber tab with 2 running bg tasks → teal dots near the top
+	// of the left edge of the visible strip (x11 strip = columns 0..TabW).
+	img := DrawTab(TabState{Color: 0xebcb8b, Expanded: false, BackgroundRunning: 2}, nil)
+	// A pixel at the first dot's center should be teal-ish (the dotRunning color).
+	got := img.RGBA.RGBAAt(dotInset+dotRadius, dotTop+dotRadius)
+	want := unpackRGBA(dotRunning)
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Errorf("first running dot = %v, want %v", got, want)
+	}
+}
+
+func TestDrawTab_OutcomeDotFailed(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x6b7280, Expanded: false, BackgroundOutcome: "failed"}, nil)
+	got := img.RGBA.RGBAAt(dotInset+dotRadius, dotTop+dotRadius)
+	want := unpackRGBA(dotFailed)
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Errorf("outcome dot = %v, want %v (red)", got, want)
+	}
+}
+
+func TestDrawTab_NoBackgroundNoDots(t *testing.T) {
+	// With no bg work, the dot region keeps the strip's bg color.
+	img := DrawTab(TabState{Color: 0x6b7280, Expanded: false}, nil)
+	got := img.RGBA.RGBAAt(dotInset+dotRadius, dotTop+dotRadius)
+	want := unpackRGBA(0x6b7280)
+	if got != want {
+		t.Errorf("dot region = %v, want strip bg %v", got, want)
+	}
+}
+
+func TestDrawTab_DotsRightStripWlr(t *testing.T) {
+	// TabRight=true: visible strip is the rightmost TabW columns; dots anchor
+	// to the left edge of THAT strip (x ≈ ExpandedW-TabW).
+	img := DrawTab(TabState{Color: 0x6b7280, Expanded: false, TabRight: true, BackgroundRunning: 1}, nil)
+	x := ExpandedW - TabW + dotInset + dotRadius
+	got := img.RGBA.RGBAAt(x, dotTop+dotRadius)
+	want := unpackRGBA(dotRunning)
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Errorf("wlr running dot at x=%d = %v, want %v", x, got, want)
+	}
+}
+
+func TestDrawTab_OutcomeDotDone(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x6b7280, Expanded: false, BackgroundOutcome: "done"}, nil)
+	got := img.RGBA.RGBAAt(dotInset+dotRadius, dotTop+dotRadius)
+	want := unpackRGBA(dotDone)
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Errorf("outcome dot = %v, want %v (green)", got, want)
+	}
+}
+
+func TestDrawTab_DotsOnExpandedPanel(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x6b7280, Expanded: true, BackgroundRunning: 1}, nil)
+	got := img.RGBA.RGBAAt(dotInset+dotRadius, dotTop+dotRadius)
+	want := unpackRGBA(dotRunning)
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Errorf("expanded running dot = %v, want %v (teal)", got, want)
+	}
+}
+
 func TestContrastFG(t *testing.T) {
 	cases := []struct {
 		bg   color.RGBA

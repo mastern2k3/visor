@@ -330,9 +330,11 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		}
 		seen[s.ID] = true
 		st := render.TabState{
-			Color:       colorFor(s),
-			Label:       labelFor(s),
-			TabRight: true,
+			Color:             colorFor(s),
+			Label:             labelFor(s),
+			TabRight:          true,
+			BackgroundRunning: s.BackgroundRunning,
+			BackgroundOutcome: s.BackgroundOutcome,
 		}
 		if ls, ok := d.surfaces[s.ID]; ok {
 			st.Expanded = ls.state.Expanded // preserve hover state across snapshot updates

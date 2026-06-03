@@ -35,8 +35,8 @@ import (
 //	tabW .. textPad  : padding gap between tab and text
 //	textPad .. expandedW: cwd text
 const (
-	tabW   = render.TabW
-	tabH   = render.TabH
+	tabW      = render.TabW
+	tabH      = render.TabH
 	expandedW = render.ExpandedW
 	textPad   = render.TextPad
 	fontPt    = render.FontPt
@@ -109,7 +109,10 @@ func (t *tab) update(s sessionView, y int, color uint32) {
 	if color != t.opt.color {
 		t.opt.color = color
 	}
-	if color != prevColor || displayLabel(s) != displayLabel(prevSess) {
+	if color != prevColor ||
+		displayLabel(s) != displayLabel(prevSess) ||
+		s.BackgroundRunning != prevSess.BackgroundRunning ||
+		s.BackgroundOutcome != prevSess.BackgroundOutcome {
 		t.render()
 	}
 }
@@ -410,9 +413,11 @@ func (t *tab) render() {
 	}
 
 	rt := render.DrawTab(render.TabState{
-		Color:    t.opt.color,
-		Label:    displayLabel(t.sess),
-		Expanded: true, // x11 uses positional window-slide; always render full opaque panel
+		Color:             t.opt.color,
+		Label:             displayLabel(t.sess),
+		Expanded:          true, // x11 uses positional window-slide; always render full opaque panel
+		BackgroundRunning: t.sess.BackgroundRunning,
+		BackgroundOutcome: t.sess.BackgroundOutcome,
 	}, t.font)
 	t.overflow = rt.Overflow
 
