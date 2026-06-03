@@ -147,9 +147,17 @@ with high-frequency fields like `LastUpdate`.
 
 ### Clearing the outcome dot
 
-`BackgroundOutcome` clears to `""` on the next `UserPromptSubmit` for the session (and on
-the transcript-derived edge into `working`). This reuses the existing transition plumbing
-in `state/hooks.go` / `state/state.go` — one extra clear in the working-edge branch.
+`BackgroundOutcome` clears to `""` in two places:
+
+- On the next `UserPromptSubmit` hook for the session — the unambiguous "user re-engaged"
+  signal (a real user prompt line in the transcript classifies as `unknown`, deferring to
+  this hook anyway).
+- When a new background batch starts (the running set goes empty → non-empty).
+
+It is deliberately **not** cleared on transcript-derived working edges: a `tool_result`
+line reads as `working`, and clearing there would wipe a freshly-set outcome dot during
+ongoing foreground work. The badge is orthogonal — a green/red dot may sit on a cyan
+"working" strip, which is correct.
 
 ## Rendering
 
