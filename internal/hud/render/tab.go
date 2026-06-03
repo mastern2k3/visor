@@ -163,25 +163,22 @@ func fillDot(img *image.RGBA, cx, cy int, fill, outline color.RGBA) {
 func drawBackgroundDots(img *image.RGBA, s TabState, stripLeftX int, bg color.RGBA) {
 	outline := contrastFG(bg)
 	cx := stripLeftX + dotInset + dotRadius
-	draw := func(i int, packed uint32) {
+	paintDot := func(i int, packed uint32) {
 		cy := dotTop + dotRadius + i*(2*dotRadius+1+dotGap)
 		fillDot(img, cx, cy, unpackRGBA(packed), outline)
 	}
 	if s.BackgroundRunning > 0 {
-		n := s.BackgroundRunning
-		if n > dotMaxRunning {
-			n = dotMaxRunning
-		}
+		n := min(s.BackgroundRunning, dotMaxRunning)
 		for i := 0; i < n; i++ {
-			draw(i, dotRunning)
+			paintDot(i, dotRunning)
 		}
 		return
 	}
 	switch s.BackgroundOutcome {
 	case "done":
-		draw(0, dotDone)
+		paintDot(0, dotDone)
 	case "failed":
-		draw(0, dotFailed)
+		paintDot(0, dotFailed)
 	}
 }
 

@@ -137,6 +137,24 @@ func TestDrawTab_DotsRightStripWlr(t *testing.T) {
 	}
 }
 
+func TestDrawTab_OutcomeDotDone(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x6b7280, Expanded: false, BackgroundOutcome: "done"}, nil)
+	got := img.RGBA.RGBAAt(dotInset+dotRadius, dotTop+dotRadius)
+	want := unpackRGBA(dotDone)
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Errorf("outcome dot = %v, want %v (green)", got, want)
+	}
+}
+
+func TestDrawTab_DotsOnExpandedPanel(t *testing.T) {
+	img := DrawTab(TabState{Color: 0x6b7280, Expanded: true, BackgroundRunning: 1}, nil)
+	got := img.RGBA.RGBAAt(dotInset+dotRadius, dotTop+dotRadius)
+	want := unpackRGBA(dotRunning)
+	if got.R != want.R || got.G != want.G || got.B != want.B {
+		t.Errorf("expanded running dot = %v, want %v (teal)", got, want)
+	}
+}
+
 func TestContrastFG(t *testing.T) {
 	cases := []struct {
 		bg   color.RGBA
