@@ -48,7 +48,15 @@
           (button :class "visor-btn visor-dismiss"
                   :tooltip "dismiss until next state change"
                   :onclick "visor ctl dismiss ${s.id} &" "✕")))
-      (box :class "visor-bar" :width 8 :height 28))))
+      (box :class "visor-bar" :width 8 :height 28
+           :orientation "v"
+           :space-evenly false
+           :valign "start"
+        (box :class "visor-dot visor-dot-run" :visible {s.background_running >= 1})
+        (box :class "visor-dot visor-dot-run" :visible {s.background_running >= 2})
+        (box :class "visor-dot visor-dot-run" :visible {s.background_running >= 3})
+        (box :class "visor-dot visor-dot-${s.background_outcome}"
+             :visible {s.background_running == 0 && s.background_outcome != ""})))))
 
 ;; ----------------------------------------------------------------------
 ;; Dock window: right-anchored vertical strip.

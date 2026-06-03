@@ -33,6 +33,29 @@
   background-color: #ffffff;             // brighten on hover for affordance
 }
 
+// Background-work indicator dots inside the bar.
+.visor-dot {
+  min-width: 5px;
+  min-height: 5px;
+  margin: 1px auto;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+}
+.visor-dot-run {
+  background-color: #8be0d0;             // teal — running
+  animation: visor-dot-pulse 1.4s ease-in-out infinite;
+}
+.visor-dot-done {
+  background-color: #a3d977;             // green — completed ok
+}
+.visor-dot-failed {
+  background-color: #ff7a7a;             // red — failure
+}
+@keyframes visor-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 // Expanded details panel.
 .visor-panel {
   background-color: rgba(20, 22, 28, 0.94);
