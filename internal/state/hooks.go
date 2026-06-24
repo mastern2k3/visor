@@ -84,6 +84,16 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 		delete(s.dismissed, sess.ID)
 	}
 
+	// Revival un-tombstones a session. A previously-ended session can come
+	// back via `/branch`, `/resume`, or a fork that reuses the transcript —
+	// each fires a fresh SessionStart (and ongoing activity hooks). Without
+	// clearing Ended here, Snapshot() would keep filtering the live session
+	// out forever and it would never reappear in the HUD. SessionEnd is
+	// excluded — that's the event that sets the tombstone in the first place.
+	if sess.Ended && event != "SessionEnd" {
+		sess.Ended = false
+	}
+
 	switch event {
 	case "SessionStart":
 		// JumpCmd is captured by the hook CLI from $VISOR_JUMP_CMD and is

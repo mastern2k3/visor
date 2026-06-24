@@ -367,6 +367,14 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 		sess.Attention = AttentionAck
 		delete(s.dismissed, sess.ID)
 	}
+	// Live appends also un-tombstone an ended session. A `/branch`, `/resume`,
+	// or fork keeps writing to the transcript; an already-running revived
+	// session won't fire a fresh SessionStart, so the tailer is the only signal
+	// that brings it back. Backfill (isInitial) must NOT clear Ended — that's
+	// exactly the startup resurrection the tombstone exists to prevent.
+	if !isInitial && len(lines) > 0 && sess.Ended {
+		sess.Ended = false
+	}
 	if sess.Activity != prev {
 		changed = true
 		if sess.Activity == transcript.ActivityWaitingUser {
