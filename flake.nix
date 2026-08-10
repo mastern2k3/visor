@@ -22,7 +22,6 @@
             delve
 
             # Backend runtime / debugging
-            eww             # default HUD backend
             wayland-utils   # wayland-info for wlr backend debugging
             wlr-randr       # output enumeration on wlr compositors
             xprop           # inspect EWMH state for the x11 backend / focus path

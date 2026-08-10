@@ -46,8 +46,27 @@ func New(cfg config.Config, pinTheme bool) *Backend {
 func (b *Backend) Name() string { return "x11" }
 
 func (b *Backend) Install() (string, error) {
-	// No on-disk install needed — everything is in the binary.
-	return "x11 backend is built into visor; nothing to install. Run `visor hud open --backend=x11`.\n", nil
+	// No on-disk install needed — everything is in the binary. We still print
+	// a picom snippet because visor draws its own drop shadow on the capsule,
+	// and a compositor's own `wintypes: dock = { shadow = true }` adds a
+	// second, rectangular shadow around the full window box on top of it.
+	// That's the user's config file to edit, not ours to write, so we print
+	// rather than write — mirroring how `visor install` prints a
+	// settings.json snippet instead of touching it directly.
+	return `x11 backend is built into visor; nothing to install.
+Run ` + "`visor hud open`" + ` (or --backend=x11 explicitly).
+
+If your compositor (e.g. picom) draws shadows on dock windows, its shadow
+will double up with visor's own — add visor to shadow-exclude so only
+visor's shadow shows. Tab windows are named "visor-tab", so this line
+matches all of them:
+
+  shadow-exclude = [ "name *= 'visor'" ]
+
+Alternatively, turn off visor's own shadow with ` + "`visor hud shadow off`" + `
+if you'd rather keep your compositor's shadow instead. Only one of these is
+needed, and only if your compositor shadows dock windows at all.
+`, nil
 }
 
 func (b *Backend) Open() error {

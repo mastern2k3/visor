@@ -44,9 +44,10 @@ go build -o bin/visor ./cmd/visor
 ./bin/visor ctl ack <id>
 ./bin/visor ctl jump <id>           # focus the session's window (WIP)
 
-# HUD lifecycle
-./bin/visor hud open --backend=eww  # default
-./bin/visor hud open --backend=x11  # native Go dock
+# HUD lifecycle (backend auto-detects: WAYLAND_DISPLAY set -> wlr, else x11)
+./bin/visor hud open
+./bin/visor hud open --backend=x11
+./bin/visor hud open --backend=wlr
 ./bin/visor hud close
 
 # Debug: classify a transcript without the daemon
@@ -69,10 +70,10 @@ A pub/sub layer broadcasts a fresh snapshot after every change, suppressing no-o
 
 ### HUD backends
 
-The `Backend` interface (`Name / Install / Open / Close`) has two implementations today:
+The `Backend` interface (`Name / Install / Open / Close`) has two implementations today, both pure-Go and in-process:
 
-- **`eww`** — a [yuck](https://github.com/elkowar/eww) config that consumes `visor ctl watch`.
-- **`x11`** — a pure-Go native dock (`jezek/xgb` + `xgbutil`): one override-redirect window per session with EWMH dock/sticky/above hints.
+- **`x11`** — one override-redirect window per session (`jezek/xgb` + `xgbutil`) with EWMH dock/sticky/above hints and per-pixel alpha.
+- **`wlr`** — one `wlr-layer-shell` surface per session, for Wayland compositors that support the layer-shell protocol (GNOME does not; use `x11` there via XWayland).
 
 ## Paths & environment
 
@@ -87,7 +88,7 @@ cmd/visor/         CLI entrypoints (daemon, hook, ctl, hud, install)
 internal/state/    session store, activity/attention model, pub/sub
 internal/transcript/  JSONL decode + classification
 internal/discovery/   fsnotify file tailer
-internal/hud/      backend interface + eww and x11 implementations
+internal/hud/      backend interface + x11 and wlr implementations
 internal/ipc/      Unix-socket JSON IPC
 internal/wm/       window-manager detection
 scripts/           visor-hook.sh wrapper

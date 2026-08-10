@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/nitzanz/visor/internal/hud"
 	"github.com/nitzanz/visor/internal/hud/config"
-	"github.com/nitzanz/visor/internal/hud/eww"
 	"github.com/nitzanz/visor/internal/hud/render"
 	"github.com/nitzanz/visor/internal/hud/wlr"
 	"github.com/nitzanz/visor/internal/hud/x11"
@@ -68,18 +68,24 @@ func rejectUnknownTheme(cmdName, name string) {
 	}
 }
 
-// pickBackend resolves a backend name to an implementation. cfg and
-// pinTheme are only meaningful to the in-process backends (x11, wlr); eww
-// renders from its own `visor ctl watch` subscription and has no concept of
-// a resolved palette.
+// pickBackend resolves a backend name to an implementation. An empty name
+// auto-detects: a Wayland session (WAYLAND_DISPLAY set) gets the wlr
+// backend, everything else gets x11 (which also covers GNOME via XWayland,
+// since GNOME has no layer-shell). cfg and pinTheme are threaded through to
+// whichever in-process backend gets picked.
 func pickBackend(name string, cfg config.Config, pinTheme bool) (hud.Backend, error) {
 	switch name {
-	case "", "eww":
-		return eww.New(), nil
+	case "":
+		if os.Getenv("WAYLAND_DISPLAY") != "" {
+			return wlr.New(cfg, pinTheme), nil
+		}
+		return x11.New(cfg, pinTheme), nil
 	case "x11":
 		return x11.New(cfg, pinTheme), nil
 	case "wlr":
 		return wlr.New(cfg, pinTheme), nil
+	case "eww":
+		return nil, errors.New("the eww backend was removed; use --backend=x11 or --backend=wlr instead")
 	default:
 		return nil, fmt.Errorf("unknown backend %q", name)
 	}
@@ -92,7 +98,7 @@ func runHUD(args []string) {
 	}
 	sub := args[0]
 	fs := flag.NewFlagSet("hud "+sub, flag.ExitOnError)
-	backendName := fs.String("backend", "eww", "HUD backend (eww|x11|wlr)")
+	backendName := fs.String("backend", "", "HUD backend (x11|wlr; default: auto-detect)")
 	themeFlag := fs.String("theme", "", "palette theme (tuned|silent|traffic); pins the whole config (theme AND shadow), disabling live reload for both")
 	var shadowFlag optionalBool
 	fs.Var(&shadowFlag, "shadow", "draw the HUD's own drop shadow (true|false)")

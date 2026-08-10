@@ -45,7 +45,9 @@ func runCtl(args []string) {
 		ctlSimple("jump", args[1])
 	case "watch":
 		// Long-lived subscription: prints one JSON line whenever HUD-observable
-		// state changes. Consumed by eww's deflisten.
+		// state changes. Handy for scripting/debugging; the in-process x11/wlr
+		// backends subscribe to internal/state directly rather than shelling
+		// out to this.
 		ctlWatch()
 	case "classify":
 		// Local debug helper (no daemon required).
@@ -102,10 +104,10 @@ func ctlSimple(cmd, id string) {
 }
 
 func ctlWatch() {
-	// Long-lived stream for eww's deflisten. The daemon can die and restart
-	// under us, so we reconnect with backoff rather than exiting — that keeps
-	// the deflisten widget alive across daemon restarts. On disconnect we emit
-	// an empty array so the HUD clears instead of showing stale sessions.
+	// Long-lived stream, used by `visor ctl watch` scripting/debugging. The
+	// daemon can die and restart under us, so we reconnect with backoff rather
+	// than exiting. On disconnect we emit an empty array so consumers clear
+	// instead of showing stale sessions.
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 

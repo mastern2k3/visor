@@ -11,9 +11,10 @@ Usage:
   visor daemon              run the attention daemon
   visor install             write hook wrapper, print settings.json snippet
   visor hud <subcommand>    HUD control
-                              install [--backend=eww]   write backend config
-                              open    [--backend=eww]   open the HUD
-                              close   [--backend=eww]   close the HUD
+                              install [--backend=x11|wlr]   write backend config
+                              open    [--backend=x11|wlr]   open the HUD
+                              close   [--backend=x11|wlr]   close the HUD
+                              (backend defaults to auto-detect)
   visor hook <event>        post a hook event to the daemon (stdin: JSON)
   visor ctl <subcommand>    query/control the daemon
                               list                  print sessions
