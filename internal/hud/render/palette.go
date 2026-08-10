@@ -73,6 +73,11 @@ var themes = map[string]Palette{}
 // shared token — not just the two fields a hand-written override list
 // happened to anticipate. Non-zero fields declared directly on p always win;
 // defaults only backfill what's zero.
+//
+// Coupling: this list must have one branch per shared scalar field on
+// Palette. Adding a new shared token (WorkX, PanelX, GlyphX) requires adding
+// a matching backfill branch here, or the new field will stay zero for every
+// theme that doesn't set it explicitly.
 func register(p Palette) {
 	d := Palette{}
 	panelDefaults(&d)

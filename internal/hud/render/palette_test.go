@@ -155,6 +155,26 @@ func TestPalette_OnlyPermissionGlows(t *testing.T) {
 	}
 }
 
+// TestPalette_RegisterMergesOverridesAndDefaults exercises both directions of
+// register()'s zero-fill merge. A regression that made register() ignore
+// theme overrides (e.g. reverting to a hardcoded two-field re-apply) would
+// still pass TestPalette_AllTokensPopulated, since the shared default is also
+// non-zero — this test is the one that would actually catch it.
+func TestPalette_RegisterMergesOverridesAndDefaults(t *testing.T) {
+	traffic := Theme("traffic")
+	if traffic.WorkRunning != 0x0d3b33 {
+		t.Errorf("traffic.WorkRunning = %#06x, want declared override %#06x", traffic.WorkRunning, 0x0d3b33)
+	}
+	if traffic.WorkDone != 0xa3d977 {
+		t.Errorf("traffic.WorkDone = %#06x, want shared default %#06x", traffic.WorkDone, 0xa3d977)
+	}
+
+	silent := Theme("silent")
+	if silent.WorkRunning != 0x8be0d0 {
+		t.Errorf("silent.WorkRunning = %#06x, want shared default %#06x", silent.WorkRunning, 0x8be0d0)
+	}
+}
+
 func TestPalette_For(t *testing.T) {
 	p := Theme("silent")
 	cases := []struct {
