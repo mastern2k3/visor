@@ -26,16 +26,9 @@ var fontCandidates = []string{
 func FontCandidates() []string { return fontCandidates }
 
 // LoadFont resolves a monospaced TrueType font on the system.
-//
-// Resolution order:
-//  1. fontconfig: `fc-match -f "%{file}\n" "monospace:fontformat=TrueType"`.
-//     This is the standard Linux mechanism and works on every distro that
-//     ships fontconfig (Debian/Ubuntu, Fedora, Arch, NixOS, etc.). The Nix
-//     store paths that confuse hardcoded lookups are transparent here.
-//  2. Hardcoded fallbacks under /usr/share/fonts (see fontCandidates) for
-//     systems without `fc-match` on PATH.
-//
-// Returns the parsed font or an error describing both attempts.
+// Font path resolution is delegated to FontPath; see its documentation
+// in faces.go for the resolution order and behavior details.
+// Returns the parsed font or an error.
 func LoadFont() (*truetype.Font, error) {
 	p, err := FontPath()
 	if err != nil {

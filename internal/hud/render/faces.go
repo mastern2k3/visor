@@ -27,8 +27,25 @@ type Faces struct {
 	Glyph font.Face
 }
 
-// FontPath resolves a monospaced TrueType/OpenType font path, preferring
-// fontconfig and falling back to the hardcoded candidates in font.go.
+// FontPath resolves a monospaced TrueType/OpenType font path. This is the
+// single authoritative source for system font discovery.
+//
+// Resolution order:
+//  1. fontconfig: `fc-match -f "%{file}\n" "monospace:fontformat=TrueType"`.
+//     This is the standard Linux mechanism and works on every distro that
+//     ships fontconfig (Debian/Ubuntu, Fedora, Arch, NixOS, etc.). The Nix
+//     store paths that confuse hardcoded lookups are transparent here.
+//  2. Hardcoded fallbacks under /usr/share/fonts (see fontCandidates) for
+//     systems without `fc-match` on PATH.
+//
+// Note: only checks path existence via os.Stat, not parseability. A font file
+// that exists but is corrupt will be returned, and parse attempts downstream
+// (in LoadFaces/LoadFont) will fail hard rather than falling back to
+// candidates. This is intentional — corrupt files are a configuration problem,
+// not a transient failure to retry.
+//
+// Returns an error if neither fontconfig nor the candidate list resolves to an
+// existing file.
 func FontPath() (string, error) {
 	out, err := exec.Command("fc-match", "-f", "%{file}\n",
 		"monospace:fontformat=TrueType").Output()
