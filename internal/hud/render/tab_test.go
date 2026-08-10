@@ -353,10 +353,14 @@ func TestMaxProtrusion_CoversActualWobblePeak(t *testing.T) {
 // TestMaxProtrusion_UnchangedAtTodaysValues locks MaxProtrusion at 12 (and
 // CapsuleDrawW at 30) for today's AlertProtrusion=8, WobbleAmp=4.0 — the
 // values the rest of the rendering code and both backends were built and
-// visually verified against. This is not a behavior the derivation should
-// ever need to change on its own; a value change here means either the
-// geometry constants moved (fine, update this test) or the ceiling
-// derivation regressed (not fine).
+// visually verified against. A value change here means either the geometry
+// constants moved on purpose (fine, update this test) or MaxProtrusion's
+// literal was hand-edited to something that under-provisions (caught by
+// TestMaxProtrusion_CoversActualWobblePeak above, not this test).
+//
+// Deliberate exception to "tests must not hardcode 18/30/12/23/335": this
+// test's entire purpose is pinning those exact numbers, not deriving them —
+// hardcoding is the point, not an oversight.
 func TestMaxProtrusion_UnchangedAtTodaysValues(t *testing.T) {
 	if MaxProtrusion != 12 {
 		t.Errorf("MaxProtrusion = %d, want 12", MaxProtrusion)

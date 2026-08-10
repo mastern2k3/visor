@@ -27,22 +27,14 @@ const (
 	// wobbles up to WobbleAmp further. Defined once here; the wlr backend's
 	// surface overflow is an alias of it.
 	//
-	// The animation code (internal/hud/x11/tab.go, internal/hud/wlr/surface.go)
-	// applies the wobble via math.Round, not truncation, so this must be a
-	// ceiling of WobbleAmp — not int(WobbleAmp), which truncates and would
-	// under-provision the overhang for any non-integer amplitude (e.g. 4.5
-	// rounds to a 5px peak shift but int() truncates to 4, detaching the
-	// capsule from the screen edge by 1px — the exact regression already fixed
-	// twice). math.Ceil is not usable here: it is a function, not a constant
-	// expression, and MaxProtrusion must stay a constant (CapsuleDrawW and
-	// BufW below depend on it at compile time). Instead we compute the ceiling
-	// with integer arithmetic: scale WobbleAmp up by wobbleCeilScale (chosen
-	// large enough that any amplitude expressed to a handful of decimal places
-	// scales to an exact integer, which Go's constant conversion requires),
-	// then divide with the "add (scale-1), integer-divide" ceiling idiom.
-	wobbleCeilScale = 1_000_000_000
-	wobbleAmpCeil   = int((int64(WobbleAmp*wobbleCeilScale) + wobbleCeilScale - 1) / wobbleCeilScale)
-	MaxProtrusion   = AlertProtrusion + wobbleAmpCeil
+	// Plain literal, not a derived expression: it must satisfy
+	// MaxProtrusion >= AlertProtrusion + round(WobbleAmp) (the animation code
+	// applies the wobble via math.Round, not truncation), and
+	// TestMaxProtrusion_CoversActualWobblePeak in tab_test.go enforces that
+	// invariant directly, independent of how this literal is spelled. Update
+	// this value by hand if AlertProtrusion or WobbleAmp change; the test
+	// fails loudly if the new value under-provisions.
+	MaxProtrusion = 12
 	// CapsuleDrawW is how wide the capsule is actually *drawn*. It is
 	// MaxProtrusion wider than the visible width so that the extra hangs off
 	// the screen edge at rest: protruding or wobbling then reveals more capsule

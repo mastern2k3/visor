@@ -154,26 +154,31 @@ func (t *tab) restX() int {
 	return base
 }
 
-// tick is called by the dock's animation loop. Working tabs wobble
-// leftward; everything else snaps back to rest if it was previously moved.
-func (t *tab) tick(now time.Time) {
-	if t.opt.expanded {
-		return // hover takes priority; nothing to animate
-	}
+// tickX is the pure part of tick(): given the current time, it computes
+// where the tab's window should sit. Extracted so it can be unit-tested
+// without a live X connection — tick() itself calls into t.win.Move, which
+// needs one. Working tabs wobble leftward from rest; everything else stays
+// at rest.
+func (t *tab) tickX(now time.Time) int {
 	rest := t.restX()
 	if t.sess.Activity != "working" {
-		if t.opt.x != rest {
-			t.opt.x = rest
-			t.win.Move(rest, t.opt.y)
-		}
-		return
+		return rest
 	}
 	// Cosine eases naturally — zero velocity at the endpoints, max speed
 	// in the middle. (1 - cos)/2 maps to [0, 1] so the offset stays leftward.
 	elapsed := now.Sub(t.wobbleStart).Seconds()
 	t01 := (1 - math.Cos(elapsed*2*math.Pi/wobblePeriod+t.wobblePhase)) / 2
 	offset := -int(math.Round(wobbleAmp * t01))
-	newX := rest + offset
+	return rest + offset
+}
+
+// tick is called by the dock's animation loop. Working tabs wobble
+// leftward; everything else snaps back to rest if it was previously moved.
+func (t *tab) tick(now time.Time) {
+	if t.opt.expanded {
+		return // hover takes priority; nothing to animate
+	}
+	newX := t.tickX(now)
 	if newX != t.opt.x {
 		t.opt.x = newX
 		t.win.Move(newX, t.opt.y)
@@ -314,6 +319,15 @@ func (t *tab) onLeave(X *xgbutil.XUtil, ev xevent.LeaveNotifyEvent) {
 	t.setExpanded(false)
 }
 
+// expandedX is the pure part of the expanded-position computation: the
+// window's left edge when slid fully open, so its right edge (bufW further)
+// lands exactly on the screen edge. Extracted so the arithmetic can be
+// tested directly without going through setExpanded, which also drives
+// t.win.Move and reshape() and needs a live X connection.
+func expandedX(rightX int) int {
+	return rightX - bufW
+}
+
 // setExpanded slides the window between its collapsed and expanded
 // positions. Width is constant (expandedW); only X changes. The wobble
 // animation also reads this state — wobble is suppressed when expanded.
@@ -324,7 +338,7 @@ func (t *tab) setExpanded(expand bool) {
 	t.opt.expanded = expand
 	var newX int
 	if expand {
-		newX = t.opt.rightX - bufW
+		newX = expandedX(t.opt.rightX)
 	} else {
 		newX = t.restX()
 	}
