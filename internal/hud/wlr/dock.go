@@ -353,7 +353,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		}
 		now := time.Now()
 		// Elapsed is derived fresh from "now" here, but truncated to whole
-		// seconds (stateElapsed) so that repeated calls within the same
+		// seconds (render.Elapsed) so that repeated calls within the same
 		// second are equal — otherwise the `ls.state != st` skip-check below
 		// would defeat itself and every broadcast would force a repaint
 		// regardless of whether anything about this surface actually
@@ -367,7 +367,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			Glyph:             s.Glyph,
 			Name:              name,
 			Path:              path,
-			Elapsed:           stateElapsed(now, s.StateSince),
+			Elapsed:           render.Elapsed(s.StateSince, now),
 			TabRight:          true,
 			Shadow:            d.cfg.Shadow,
 			BackgroundRunning: s.BackgroundRunning,
@@ -379,7 +379,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			// one tickHalo will use on the next animation tick — so the
 			// phase baked in here and the phase tickHalo advances from later
 			// never disagree.
-			_, haloPhase := haloPhaseStep(now, ls.wobbleStart)
+			_, haloPhase := render.HaloPhaseStep(ls.wobbleStart, now)
 			st.HaloPhase = haloPhase
 			if ls.state != st {
 				ls.state = st
@@ -390,7 +390,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			ls.attention = s.Attention
 			ls.stateSince = s.StateSince
 			ls.lastElapsed = render.ElapsedString(st.Elapsed)
-			step, _ := haloPhaseStep(now, ls.wobbleStart)
+			step, _ := render.HaloPhaseStep(ls.wobbleStart, now)
 			ls.lastHaloStep = step
 			// Re-stack: slot may have changed.
 			ls.setSlot(slot)
@@ -408,7 +408,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			}
 			ls.stateSince = s.StateSince
 			ls.lastElapsed = render.ElapsedString(st.Elapsed)
-			step, _ := haloPhaseStep(now, ls.wobbleStart)
+			step, _ := render.HaloPhaseStep(ls.wobbleStart, now)
 			ls.lastHaloStep = step
 			d.surfaces[s.ID] = ls
 		}

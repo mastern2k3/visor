@@ -145,7 +145,7 @@ func (t *tab) update(s sessionView, y int) {
 		t.opt.y = y
 		t.win.Move(t.x(), y)
 	}
-	t.render()
+	t.render(time.Now())
 }
 
 // x returns the X coordinate of the right-anchored tab.
@@ -495,7 +495,8 @@ func (t *tab) hideTooltip() {
 	}
 }
 
-// tabState builds the renderer input for the current session state.
+// tabState builds the renderer input for the current session state at the
+// given instant.
 //
 // Expanded is always true: x11 reveals and hides the panel by sliding the
 // window, not by re-rendering it. The panel text is always drawn into the
@@ -505,13 +506,13 @@ func (t *tab) hideTooltip() {
 // tickElapsed/tickHalo only bother refreshing it once it is actually hovered
 // or glowing.
 //
-// Elapsed and HaloPhase are both derived fresh from "now" here, but each is
-// quantised (Elapsed to whole seconds, HaloPhase to render.HaloSteps) so that
-// repeated calls within the same quantum are equal — otherwise render()'s
+// Elapsed and HaloPhase are both derived from `now`, but each is quantised
+// (Elapsed to whole seconds, HaloPhase to render.HaloSteps) so that repeated
+// calls within the same quantum are equal — otherwise render()'s
 // equality-based skip-check on t.lastState would defeat itself and every
 // snapshot broadcast would force a redraw regardless of whether anything
 // about this tab actually changed.
-func (t *tab) tabState() render.TabState {
+func (t *tab) tabState(now time.Time) render.TabState {
 	name := t.sess.DisplayName
 	if name == "" {
 		// Older daemon or incomplete snapshot: fall back to the pre-Task-8
@@ -524,7 +525,7 @@ func (t *tab) tabState() render.TabState {
 	if path == name {
 		path = ""
 	}
-	_, haloPhase := haloPhaseStep(time.Now(), t.wobbleStart)
+	_, haloPhase := render.HaloPhaseStep(t.wobbleStart, now)
 	return render.TabState{
 		Activity:  t.sess.Activity,
 		Attention: t.sess.Attention,
@@ -532,7 +533,7 @@ func (t *tab) tabState() render.TabState {
 		Glyph:     t.sess.Glyph,
 		Name:      name,
 		Path:      path,
-		Elapsed:   stateElapsed(time.Now(), t.sess.StateSince),
+		Elapsed:   render.Elapsed(t.sess.StateSince, now),
 		Expanded:  true,
 		// Both of these hang off alpha. Without a compositor the padding around
 		// the capsule is opaque black, so a shadow drawn into it is a black box
@@ -546,53 +547,6 @@ func (t *tab) tabState() render.TabState {
 	}
 }
 
-// stateElapsed computes time-in-state from a StateSince timestamp.
-//
-// It defends a zero timestamp: time.Since(time.Time{}) is about 2562047h
-// positive (not negative, so render.ElapsedString's own clamp does not save
-// us), and an older daemon, a replayed snapshot, or a future regression could
-// all produce one.
-//
-// The result is truncated to whole seconds so that repeated calls within the
-// same second are equal — see the tabState doc comment for why that matters.
-func stateElapsed(now, since time.Time) time.Duration {
-	if since.IsZero() {
-		return 0
-	}
-	return now.Sub(since).Truncate(time.Second)
-}
-
-// elapsedChanged is the pure decision behind tickElapsed: whether the
-// rendered elapsed string for `since` at `now` differs from the last one
-// actually painted. Returns the freshly rendered string either way so the
-// caller can cache it without recomputing.
-func elapsedChanged(now, since time.Time, last string) (changed bool, str string) {
-	str = render.ElapsedString(stateElapsed(now, since))
-	return str != last, str
-}
-
-// haloPhaseStep quantises `now` into one of render.HaloSteps discrete steps
-// of the render.HaloPeriod pulse cycle (see render.HaloSteps for why 8 and
-// not ~30), returning both the step index and the HaloPhase in [0,1) it
-// corresponds to. The caller compares the step against the last-rendered one
-// to decide whether a redraw is warranted at all.
-func haloPhaseStep(now, start time.Time) (step int, phase float64) {
-	// Integer nanosecond arithmetic, not float seconds: render.HaloPeriod
-	// (1.6) has no exact float64 representation, so a naive
-	// elapsed.Seconds()/HaloPeriod computation lands a hair under exact step
-	// boundaries (e.g. 0.6/1.6*8 evaluates to ~2.999999999995, not 3) and
-	// truncates one step short. Nanoseconds are exact integers, so the mod
-	// and scaled division below never misses a boundary.
-	periodNS := int64(render.HaloPeriod * float64(time.Second))
-	elapsedNS := now.Sub(start).Nanoseconds() % periodNS
-	if elapsedNS < 0 {
-		elapsedNS += periodNS
-	}
-	step = int(elapsedNS * int64(render.HaloSteps) / periodNS)
-	phase = float64(step) / float64(render.HaloSteps)
-	return step, phase
-}
-
 // tickElapsed re-renders an expanded tab when its elapsed label would
 // change. Collapsed tabs show no *visible* text (see the tabState doc
 // comment), so they never need this — which keeps the steady-state cost at
@@ -601,12 +555,12 @@ func (t *tab) tickElapsed(now time.Time) {
 	if !t.opt.expanded {
 		return
 	}
-	changed, s := elapsedChanged(now, t.sess.StateSince, t.lastElapsed)
+	changed, s := render.ElapsedChanged(t.sess.StateSince, now, t.lastElapsed)
 	if !changed {
 		return
 	}
 	t.lastElapsed = s
-	t.render()
+	t.render(now)
 }
 
 // tickHalo re-renders a tab whose current state glows (permission only) when
@@ -618,19 +572,26 @@ func (t *tab) tickHalo(now time.Time) {
 	if !t.palette.For(t.sess.Activity, t.sess.Attention, t.sess.Waiting).Glow {
 		return
 	}
-	step, _ := haloPhaseStep(now, t.wobbleStart)
+	step, _ := render.HaloPhaseStep(t.wobbleStart, now)
 	if step == t.lastHaloStep {
 		return
 	}
 	t.lastHaloStep = step
-	t.render()
+	t.render(now)
 }
 
 // render generates the full expanded buffer (capsule + panel + text) and
 // installs it as the window's background pixmap. Called once after faces are
 // assigned and whenever the rendered state changes.
-func (t *tab) render() {
-	st := t.tabState()
+//
+// now is threaded in by the caller rather than read fresh here, so the
+// instant that drove a tick's re-render decision (tickElapsed/tickHalo) is
+// exactly the instant baked into the painted Elapsed/HaloPhase values —
+// there is no second, independent time.Now() call that could (in principle,
+// however unlikely in practice) land a step past the one the caller decided
+// on.
+func (t *tab) render(now time.Time) {
+	st := t.tabState(now)
 	if t.rendered && st == t.lastState {
 		return
 	}

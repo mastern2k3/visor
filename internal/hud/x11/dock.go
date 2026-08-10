@@ -207,7 +207,7 @@ func (d *dock) makeHelpTab() error {
 		}
 		d.helpW = hw
 	}
-	t.render()
+	t.render(time.Now())
 	d.helpT = t
 	return nil
 }
@@ -311,7 +311,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			nt.palette = d.palette
 			nt.shadow = d.cfg.Shadow
 			nt.tipFont = d.tipFont
-			nt.render() // initial paint
+			nt.render(time.Now()) // initial paint
 			d.tabs[s.ID] = nt
 			continue
 		}

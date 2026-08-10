@@ -298,55 +298,12 @@ func (s *layerSurface) computeRightMargin(now time.Time) int32 {
 	return base
 }
 
-// stateElapsed computes time-in-state from a StateSince timestamp.
-//
-// It defends a zero timestamp: time.Since(time.Time{}) is about 2562047h
-// positive (not negative, so render.ElapsedString's own clamp does not save
-// us), and an older daemon, a replayed snapshot, or a future regression
-// could all produce one.
-//
-// The result is truncated to whole seconds so that repeated calls within the
-// same second are equal — otherwise the per-snapshot equality check in
-// applySnapshot (`if ls.state != st`) would defeat itself and every
-// broadcast would force a repaint regardless of whether anything about this
-// surface actually changed.
-func stateElapsed(now, since time.Time) time.Duration {
-	if since.IsZero() {
-		return 0
-	}
-	return now.Sub(since).Truncate(time.Second)
-}
-
-// elapsedChanged is the pure decision behind tickElapsed: whether the
-// rendered elapsed string for `since` at `now` differs from the last one
-// actually painted. Returns the freshly rendered string either way so the
-// caller can cache it without recomputing.
-func elapsedChanged(now, since time.Time, last string) (changed bool, str string) {
-	str = render.ElapsedString(stateElapsed(now, since))
-	return str != last, str
-}
-
-// haloPhaseStep quantises `now` into one of render.HaloSteps discrete steps
-// of the render.HaloPeriod pulse cycle (see render.HaloSteps for why 8 and
-// not ~30), returning both the step index and the HaloPhase in [0,1) it
-// corresponds to. The caller compares the step against the last-painted one
-// to decide whether a repaint is warranted at all.
-func haloPhaseStep(now, start time.Time) (step int, phase float64) {
-	// Integer nanosecond arithmetic, not float seconds: render.HaloPeriod
-	// (1.6) has no exact float64 representation, so a naive
-	// elapsed.Seconds()/HaloPeriod computation lands a hair under exact step
-	// boundaries (e.g. 0.6/1.6*8 evaluates to ~2.999999999995, not 3) and
-	// truncates one step short. Nanoseconds are exact integers, so the mod
-	// and scaled division below never misses a boundary.
-	periodNS := int64(render.HaloPeriod * float64(time.Second))
-	elapsedNS := now.Sub(start).Nanoseconds() % periodNS
-	if elapsedNS < 0 {
-		elapsedNS += periodNS
-	}
-	step = int(elapsedNS * int64(render.HaloSteps) / periodNS)
-	phase = float64(step) / float64(render.HaloSteps)
-	return step, phase
-}
+// stateElapsed/elapsedChanged/haloPhaseStep used to live here, duplicated
+// verbatim in internal/hud/x11/tab.go. Task 8 review flagged the duplication
+// (none of the three touch anything wlr-specific) and asked for the logic to
+// be hoisted into internal/hud/render alongside ElapsedString/HaloPeriod/
+// HaloSteps, which it already depended on. See render.Elapsed /
+// render.ElapsedChanged / render.HaloPhaseStep.
 
 // tickElapsed repaints an expanded surface when its elapsed label would
 // change. Collapsed surfaces draw no panel text (state.Expanded gates
@@ -356,12 +313,12 @@ func (s *layerSurface) tickElapsed(now time.Time, d *dock) {
 	if !s.state.Expanded {
 		return
 	}
-	changed, str := elapsedChanged(now, s.stateSince, s.lastElapsed)
+	changed, str := render.ElapsedChanged(s.stateSince, now, s.lastElapsed)
 	if !changed {
 		return
 	}
 	s.lastElapsed = str
-	s.state.Elapsed = stateElapsed(now, s.stateSince)
+	s.state.Elapsed = render.Elapsed(s.stateSince, now)
 	s.repaint(d)
 }
 
@@ -375,7 +332,7 @@ func (s *layerSurface) tickHalo(now time.Time, d *dock) {
 	if !d.palette.For(s.state.Activity, s.state.Attention, s.state.Waiting).Glow {
 		return
 	}
-	step, phase := haloPhaseStep(now, s.wobbleStart)
+	step, phase := render.HaloPhaseStep(s.wobbleStart, now)
 	if step == s.lastHaloStep {
 		return
 	}
