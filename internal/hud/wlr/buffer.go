@@ -12,14 +12,13 @@ import (
 )
 
 const (
-	// renderW is the width of the image produced by render.DrawTab.
-	// bufW is wider: the surface overflows past the screen's right edge by
-	// `tabOverflow` pixels, so wobble/alert shifts reveal more of the
-	// tab strip leftward instead of leaving an empty gap on the right.
-	// The extra columns are filled by duplicating the rightmost rendered
-	// column, which extends the tab strip (or expanded panel) rightward.
-	renderW = render.BufW
-	bufW    = render.BufW + tabOverflow
+	// The shm buffer is exactly the image render.DrawTab produces. It used to be
+	// tabOverflow px wider, with those columns synthesised by replicating the
+	// rightmost rendered one, so that wobble/alert shifts revealed more tab
+	// instead of an empty gap at the screen edge. render now owns that: the
+	// capsule is drawn CapsuleDrawW = CapsuleW + MaxProtrusion wide and the
+	// overhang lives inside BufW. Keeping both would double-count the overflow.
+	bufW    = render.BufW
 	bufH    = render.BufH
 	bufStri = bufW * 4 // 4 bytes per pixel, ARGB8888
 	bufSize = bufStri * bufH
@@ -128,48 +127,26 @@ func (p *shmPool) close() {
 	}
 }
 
-// CopyRGBA copies an *image.RGBA (R,G,B,A byte order, renderW x bufH) into
-// the destination buffer (bufW × bufH, BGRA byte order — what wl_shm
-// ARGB8888 expects on a little-endian host).
-//
-// The destination is wider than the source by `tabOverflow` pixels. The
-// extra columns on the right are filled by duplicating the rightmost source
-// column, which extends whatever was at the screen edge — the tab strip
-// when collapsed, the panel when expanded. This lets the surface overflow
-// the screen's right edge so wobble/alert shifts grow the visible tab
-// width instead of revealing empty space.
+// CopyRGBA copies an *image.RGBA (R,G,B,A byte order, bufW x bufH) into the
+// destination buffer (same dimensions, BGRA byte order — what wl_shm ARGB8888
+// expects on a little-endian host).
 func (b *Buffer) CopyRGBA(img *image.RGBA) {
 	src := img.Pix
 	dst := b.Pix
-	const srcStride = renderW * 4
-	if img.Stride != srcStride {
-		panic(fmt.Sprintf("wlr: render stride %d, expected %d", img.Stride, srcStride))
+	if img.Stride != bufStri {
+		panic(fmt.Sprintf("wlr: render stride %d, expected %d", img.Stride, bufStri))
 	}
 	if len(dst) != bufSize {
 		panic(fmt.Sprintf("wlr: dst size %d, expected %d", len(dst), bufSize))
 	}
 	for y := 0; y < bufH; y++ {
-		srcRow := y * srcStride
-		dstRow := y * bufStri
-		// Copy renderW pixels with RGBA → BGRA swap.
-		for x := 0; x < renderW; x++ {
-			si := srcRow + x*4
-			di := dstRow + x*4
-			dst[di+0] = src[si+2] // B
-			dst[di+1] = src[si+1] // G
-			dst[di+2] = src[si+0] // R
-			dst[di+3] = src[si+3] // A
-		}
-		// Fill the extra tabOverflow columns by replicating the last
-		// rendered column. This extends the tab strip rightward when
-		// collapsed and the panel rightward when expanded.
-		last := dstRow + (renderW-1)*4
-		for x := renderW; x < bufW; x++ {
-			di := dstRow + x*4
-			dst[di+0] = dst[last+0]
-			dst[di+1] = dst[last+1]
-			dst[di+2] = dst[last+2]
-			dst[di+3] = dst[last+3]
+		row := y * bufStri
+		for x := 0; x < bufW; x++ {
+			si := row + x*4
+			dst[si+0] = src[si+2] // B
+			dst[si+1] = src[si+1] // G
+			dst[si+2] = src[si+0] // R
+			dst[si+3] = src[si+3] // A
 		}
 	}
 }

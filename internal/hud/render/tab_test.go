@@ -45,38 +45,55 @@ func TestDrawTab_CollapsedPanelIsTransparent(t *testing.T) {
 	}
 }
 
-// The capsule is drawn Radius wider than it is so its right corners fall
+// The capsule is drawn Radius wider than CapsuleDrawW so its right corners fall
 // outside the shape and stay square. That overhang must be clipped away, or a
-// collapsed tab is CapsuleW+Radius wide instead of CapsuleW and the x11
-// window-slide arithmetic (which reveals exactly ShadowPad+CapsuleW px) breaks.
+// collapsed tab is CapsuleDrawW+Radius wide and the slide arithmetic in both
+// backends breaks.
 func TestDrawTab_CollapsedCapsuleDoesNotBleedIntoPanel(t *testing.T) {
 	img := DrawTab(TabState{Expanded: false}, nil, silent())
-	if got := img.RGBA.RGBAAt(ShadowPad+CapsuleW+2, BufH/2); got.A != 0 {
+	if got := img.RGBA.RGBAAt(ShadowPad+CapsuleDrawW+2, BufH/2); got.A != 0 {
 		t.Errorf("alpha just right of the capsule = %#x, want 0 (overhang leaked)", got.A)
 	}
 }
 
 // Same invariant stated positively, and in both orientations: scanning the
-// buffer's vertical centre must find exactly CapsuleW opaque pixels, starting
-// at the capsule's left edge. Shadow is off so only the capsule is opaque.
-func TestDrawTab_CapsuleOpaqueSpanIsExactlyCapsuleW(t *testing.T) {
+// buffer's vertical centre must find exactly CapsuleDrawW opaque pixels,
+// starting at the capsule's left edge. Shadow is off so only the capsule is
+// opaque.
+//
+// CapsuleDrawW, not CapsuleW: the capsule is drawn MaxProtrusion wider than it
+// shows at rest, so that protruding or wobbling reveals more capsule rather
+// than pulling it off the screen edge and leaving a transparent gap.
+func TestDrawTab_CapsuleOpaqueSpanIsExactlyCapsuleDrawW(t *testing.T) {
 	for _, tabRight := range []bool{false, true} {
 		img := DrawTab(TabState{Expanded: false, TabRight: tabRight, Shadow: false}, nil, silent())
 		y := BufH / 2
-		first, count := -1, 0
+		first, last, count := -1, -1, 0
 		for x := 0; x < BufW; x++ {
 			if img.RGBA.RGBAAt(x, y).A == 0xff {
 				if first < 0 {
 					first = x
 				}
+				last = x
 				count++
 			}
 		}
 		if want := capsuleX(tabRight); first != want {
 			t.Errorf("TabRight=%v: first opaque x = %d, want %d", tabRight, first, want)
 		}
-		if count != CapsuleW {
-			t.Errorf("TabRight=%v: opaque span = %d px, want %d", tabRight, count, CapsuleW)
+		if count != CapsuleDrawW {
+			t.Errorf("TabRight=%v: opaque span = %d px, want %d", tabRight, count, CapsuleDrawW)
+		}
+		// The invariant that actually keeps the capsule welded to the screen
+		// edge: its drawn right edge. For TabRight that is the buffer's own
+		// right edge; otherwise it is ShadowPad+CapsuleDrawW. Reintroducing the
+		// gap the user saw would show up here first.
+		if want := capsuleX(tabRight) + CapsuleDrawW; last+1 != want {
+			t.Errorf("TabRight=%v: drawn right edge = %d, want %d", tabRight, last+1, want)
+		}
+		if tabRight && capsuleX(true)+CapsuleDrawW != BufW {
+			t.Errorf("TabRight capsule right edge = %d, want BufW = %d",
+				capsuleX(true)+CapsuleDrawW, BufW)
 		}
 	}
 }
@@ -155,7 +172,7 @@ func TestDrawTab_CapsuleShadowDoesNotDarkenPanel(t *testing.T) {
 	base := TabState{Expanded: true, TabRight: false}
 	on := DrawTab(withShadow(base, true), nil, silent())
 	off := DrawTab(withShadow(base, false), nil, silent())
-	x, y := ShadowPad+CapsuleW+12, BufH/2
+	x, y := ShadowPad+CapsuleDrawW+12, BufH/2
 	if got, want := on.RGBA.RGBAAt(x, y), off.RGBA.RGBAAt(x, y); got != want {
 		t.Errorf("panel pixel at x=%d with shadow = %v, without = %v; the capsule's shadow bled into the panel", x, got, want)
 	}
@@ -178,7 +195,7 @@ func TestDrawTab_CapsuleHaloDoesNotWashPanel(t *testing.T) {
 		Expanded: true, TabRight: false,
 		Activity: "waiting", Attention: "needs", Waiting: "user",
 	}
-	x, y := ShadowPad+CapsuleW+12, BufH/2
+	x, y := ShadowPad+CapsuleDrawW+12, BufH/2
 	got := DrawTab(glow, nil, p).RGBA.RGBAAt(x, y)
 	want := DrawTab(plain, nil, p).RGBA.RGBAAt(x, y)
 	if got != want {
@@ -195,7 +212,7 @@ func TestDrawTab_PanelLeftCornerFollowsOrientation(t *testing.T) {
 	// x11: the panel's top-left pixel butts the capsule, so it must be square,
 	// i.e. fully opaque right at the corner.
 	x11 := DrawTab(TabState{Expanded: true, Shadow: false, TabRight: false}, nil, silent())
-	if got := x11.RGBA.RGBAAt(ShadowPad+CapsuleW, ShadowPad); got.A != 0xff {
+	if got := x11.RGBA.RGBAAt(ShadowPad+CapsuleDrawW, ShadowPad); got.A != 0xff {
 		t.Errorf("x11 panel top-left alpha = %#x, want 0xff (square corner; a rounded one leaves a notch beside the capsule)", got.A)
 	}
 	// wlr: the panel's left edge is the leading edge, so the corner is rounded
@@ -219,8 +236,8 @@ func TestDrawTab_ShadowDarkensPadWhenEnabled(t *testing.T) {
 
 func TestDrawTab_TabRightPutsCapsuleOnRight(t *testing.T) {
 	img := DrawTab(TabState{Expanded: false, TabRight: true}, nil, silent())
-	// Capsule now occupies the rightmost CapsuleW columns.
-	if got := img.RGBA.RGBAAt(BufW-1-CapsuleW/2, BufH/2); got.A != 0xff {
+	// Capsule now occupies the rightmost CapsuleDrawW columns.
+	if got := img.RGBA.RGBAAt(BufW-1-CapsuleDrawW/2, BufH/2); got.A != 0xff {
 		t.Errorf("right-edge capsule alpha = %#x, want 0xff", got.A)
 	}
 	// Far left is panel region → transparent when collapsed.

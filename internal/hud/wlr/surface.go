@@ -28,11 +28,16 @@ const (
 	alertProtrusion = render.AlertProtrusion
 
 	// tabOverflow is how many pixels the surface extends past the screen's
-	// right edge at the rest position. Chosen as alertProtrusion + wobbleAmp
-	// so that even at peak shift (alert + wobble) the buffer's right edge is
-	// still flush with or beyond the screen edge — wobble/alert always grow
-	// the visible tab leftward instead of revealing empty space.
-	tabOverflow = render.AlertProtrusion + int(render.WobbleAmp)
+	// right edge at the rest position, so that even at peak shift (alert +
+	// wobble) the capsule's right edge is still flush with or beyond the screen
+	// edge — wobble/alert always grow the visible tab leftward instead of
+	// revealing empty space.
+	//
+	// It is exactly render.MaxProtrusion, which is also the amount by which
+	// render draws the capsule wider than CapsuleW. Those two have to be the
+	// same number or the overhang and the overflow disagree, so this aliases
+	// the render constant rather than recomputing the sum.
+	tabOverflow = render.MaxProtrusion
 )
 
 // layerSurface is one tab: a wl_surface + zwlr_layer_surface_v1 pair plus
@@ -103,26 +108,32 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 	// The buffer includes render.ShadowPad of transparent padding on the left,
 	// top and bottom, so the surface must be BufW x BufH — sizing it to the
 	// capsule/panel content height alone would not match the attached buffer.
-	ls.SetSize(uint32(render.BufW+tabOverflow), uint32(render.BufH))
+	//
+	// It is exactly BufW: render now draws the capsule tabOverflow px wider than
+	// it shows at rest, so the overhang lives inside the rendered buffer. It
+	// used to be BufW+tabOverflow with those columns synthesised by replicating
+	// the last rendered one; doing both would double-count the overflow and show
+	// CapsuleDrawW rather than CapsuleW at rest.
+	ls.SetSize(uint32(render.BufW), uint32(render.BufH))
 	ls.SetExclusiveZone(-1)
 	initialRight := restRightMargin(attention)
 	ls.SetMargin(int32(slotTopMargin(slot)), initialRight, 0, 0) // top, right, bottom, left
 	ls.SetKeyboardInteractivity(protocol.LayerSurfaceV1KeyboardInteractivityNone)
 
 	// Pre-build the two input regions used to gate pointer Enter/Leave.
-	// The surface is (BufW + tabOverflow) wide; the capsule inside the buffer
-	// extends to the right edge of the surface. Input is only sensitive in
-	// surface-local coordinates that correspond to the *opaque* region — which
-	// now also excludes the transparent shadow padding above and below.
+	// The surface is BufW wide and the capsule occupies its rightmost
+	// CapsuleDrawW columns, running out past the screen edge. Input is only
+	// sensitive in surface-local coordinates that correspond to the *opaque*
+	// region — which also excludes the transparent shadow padding above/below.
 	regionTab := d.compositor.CreateRegion()
 	regionTab.Add(
-		int32(render.BufW-render.CapsuleW), int32(render.ShadowPad),
-		int32(render.CapsuleW+tabOverflow), int32(render.ContentH),
+		int32(render.BufW-render.CapsuleDrawW), int32(render.ShadowPad),
+		int32(render.CapsuleDrawW), int32(render.ContentH),
 	)
 	regionFull := d.compositor.CreateRegion()
 	regionFull.Add(
 		0, int32(render.ShadowPad),
-		int32(render.BufW+tabOverflow), int32(render.ContentH),
+		int32(render.BufW), int32(render.ContentH),
 	)
 
 	ps := &layerSurface{
@@ -153,7 +164,7 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 			ps.ls.AckConfigure(serial)
 			d.log.Debug("layer surface configure",
 				"session", ps.sessionID,
-				"want_w", render.BufW+tabOverflow,
+				"want_w", render.BufW,
 				"want_h", render.BufH,
 				"got_w", w, "got_h", h)
 			ps.repaint(d)
@@ -205,11 +216,10 @@ func (s *layerSurface) repaint(d *dock) {
 	img := render.DrawTab(s.state, d.faces, d.palette)
 	buf.CopyRGBA(img.RGBA)
 	s.surface.Attach(buf.Wl, 0, 0)
-	// DamageBuffer uses buffer-local coords (no scale/transform mapping) and
-	// is the recommended request for modern clients. Cover the full buffer
-	// including the tabOverflow replication columns — otherwise compositors
-	// keep the previous buffer's pixels at cols [renderW, bufW) and the
-	// "tip" shows a stale colour after state transitions.
+	// DamageBuffer uses buffer-local coords (no scale/transform mapping) and is
+	// the recommended request for modern clients. Cover the full buffer — it is
+	// render.BufW × render.BufH, which grew when the capsule became
+	// CapsuleDrawW wide, so this must stay expressed in the constants.
 	s.surface.DamageBuffer(0, 0, int32(bufW), int32(bufH))
 	// Match input region to visible area: capsule only when collapsed,
 	// full surface when expanded so the cursor can drift onto the panel.
@@ -249,11 +259,15 @@ func (s *layerSurface) animateTick(now time.Time) bool {
 // computeRightMargin returns the right-margin (in protocol units — positive
 // values push the surface away from the right anchor, negative push it past).
 // Starts at -tabOverflow (surface overflows the screen edge) and moves
-// rightward (toward the screen edge) as alert/wobble shifts grow.
+// rightward (toward the screen edge) as alert/wobble shifts grow. Because the
+// capsule is drawn CapsuleDrawW = CapsuleW + tabOverflow wide, the visible
+// capsule width is CapsuleDrawW plus this margin, and its right edge is welded
+// to the screen edge throughout:
 //
 //	rest:        -tabOverflow                 → visible width = CapsuleW
-//	needs:       -tabOverflow + alertProtrusion
-//	working:     adds cosine-eased wobble [0, wobbleAmp] on top of base
+//	needs:       -tabOverflow + alertProtrusion → CapsuleW + alertProtrusion
+//	working:     adds cosine-eased wobble [0, wobbleAmp] on top of base;
+//	             at the peak the margin reaches 0 and the full CapsuleDrawW shows
 func (s *layerSurface) computeRightMargin(now time.Time) int32 {
 	base := -int32(tabOverflow)
 	if s.attention == "needs" {

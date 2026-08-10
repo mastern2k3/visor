@@ -31,16 +31,26 @@ import (
 //
 // Layout of the rendered image (window-relative X) — see render.DrawTab:
 //
-//	0 .. ShadowPad             : transparent shadow padding
-//	ShadowPad .. +CapsuleW     : the capsule
-//	+CapsuleW .. BufW          : the panel
+//	0 .. ShadowPad                 : transparent shadow padding
+//	ShadowPad .. +CapsuleDrawW     : the capsule
+//	+CapsuleDrawW .. BufW          : the panel
 const (
 	bufW = render.BufW
 	bufH = render.BufH
-	// collapsedVisibleW is how much of the buffer stays on screen at rest:
-	// the capsule plus the shadow padding to its left. The panel and the
-	// capsule's own width are no longer the same number, so the slide
-	// arithmetic can't use capsuleW alone.
+	// collapsedVisibleW is how much of the buffer stays on screen at rest: the
+	// capsule's *visible* width plus the shadow padding to its left. It is
+	// deliberately CapsuleW and not CapsuleDrawW — that difference
+	// (render.MaxProtrusion px) is exactly the overhang that hangs past the
+	// screen edge at rest, so protruding or wobbling by up to MaxProtrusion
+	// reveals more capsule while its right edge stays welded to the edge:
+	//
+	//	rest      window x = rightX-23 → capsule on screen rightX-18 .. rightX+12
+	//	needs     window x = rightX-31 → capsule on screen rightX-26 .. rightX+4
+	//	peak      window x = rightX-35 → capsule on screen rightX-30 .. rightX
+	//	expanded  window x = rightX-BufW → panel ends exactly at rightX
+	//
+	// In every state the capsule's drawn right edge is at or past rightX, so
+	// there is never a transparent gap between the tab and the screen edge.
 	collapsedVisibleW = render.ShadowPad + render.CapsuleW
 )
 
@@ -527,16 +537,22 @@ func (t *tab) render() {
 // inputRects is the clickable region: never the transparent shadow padding.
 // Coordinates are window-local, matching render.DrawTab's x11 layout — the
 // capsule starts ShadowPad in from the window's left edge and the panel butts
-// straight onto it.
+// straight onto its drawn edge.
+//
+// The capsule rect uses CapsuleDrawW, the full drawn width. Most of the
+// overhang is off screen and so unclickable anyway, but including it costs
+// nothing and keeps the region correct while the tab protrudes.
 func (t *tab) inputRects() []xproto.Rectangle {
+	// render.CapsuleDrawW is a typed int (MaxProtrusion converts WobbleAmp), so
+	// unlike the untyped geometry constants it needs explicit narrowing here.
 	r := []xproto.Rectangle{{
 		X: render.ShadowPad, Y: render.ShadowPad,
-		Width: render.CapsuleW, Height: render.ContentH,
+		Width: uint16(render.CapsuleDrawW), Height: render.ContentH,
 	}}
 	if t.opt.expanded {
 		r = append(r, xproto.Rectangle{
-			X: render.ShadowPad + render.CapsuleW, Y: render.ShadowPad,
-			Width: render.ExpandedW - render.CapsuleW, Height: render.ContentH,
+			X: int16(render.ShadowPad + render.CapsuleDrawW), Y: render.ShadowPad,
+			Width: render.ExpandedW, Height: render.ContentH,
 		})
 	}
 	return r

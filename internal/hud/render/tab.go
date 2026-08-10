@@ -12,7 +12,8 @@ import (
 // Geometry, shared by both backends. Backends import these; they never
 // redeclare the literals.
 const (
-	// CapsuleW is the visible width of a tab at rest.
+	// CapsuleW is the width of the capsule that is *visible at rest*, i.e. the
+	// width of the strip the user sees when nothing is protruding.
 	CapsuleW = 18
 	// ContentH is the height of the capsule and the expanded panel.
 	ContentH = 44
@@ -20,16 +21,29 @@ const (
 	// left, top and bottom. There is none on the right: that edge is flush
 	// with (or past) the screen edge.
 	ShadowPad = 5
-	// ExpandedW is the width of the capsule-plus-panel content, i.e. the
-	// buffer width minus the shadow padding. It is NOT the panel's own width:
-	// the panel is BufW-ShadowPad-CapsuleW = 282 px in the x11 orientation and
-	// BufW-CapsuleW = 287 px in the wlr one, because the pad sits on the far
-	// side of the capsule in the former and on the far side of the panel in
-	// the latter.
+
+	// MaxProtrusion is the furthest a tab is ever shifted away from the screen
+	// edge: an attention=needs tab sits AlertProtrusion out, and a working tab
+	// wobbles up to WobbleAmp further. Defined once here; the wlr backend's
+	// surface overflow is an alias of it.
+	MaxProtrusion = AlertProtrusion + int(WobbleAmp)
+	// CapsuleDrawW is how wide the capsule is actually *drawn*. It is
+	// MaxProtrusion wider than the visible width so that the extra hangs off
+	// the screen edge at rest: protruding or wobbling then reveals more capsule
+	// instead of sliding the capsule away from the edge and leaving a gap.
+	// Without this the capsule looked like it was "hanging in the air with a
+	// margin to the right", because everything past it is transparent now.
+	CapsuleDrawW = CapsuleW + MaxProtrusion
+
+	// ExpandedW is the panel's own width.
 	ExpandedW = 300
 
-	// BufW/BufH are the rendered buffer dimensions.
-	BufW = ShadowPad + ExpandedW
+	// BufW/BufH are the rendered buffer dimensions. Note the buffer is NOT
+	// symmetric between the two orientations: the pad sits beyond the capsule
+	// in x11 (TabRight=false) and beyond the panel in wlr (TabRight=true), so
+	// the region panelRect hands back is ExpandedW wide in the former and
+	// ShadowPad+ExpandedW wide in the latter.
+	BufW = ShadowPad + CapsuleDrawW + ExpandedW
 	BufH = ShadowPad*2 + ContentH
 
 	// Radius is the corner radius of the capsule and panel. Only the leading
@@ -110,26 +124,32 @@ type TabImage struct {
 	Overflow bool // Name was wider than the panel could show
 }
 
-// capsuleX returns the buffer x of the capsule's left edge.
+// capsuleX returns the buffer x of the capsule's left edge. The capsule is
+// CapsuleDrawW wide from here, so its drawn right edge is at BufW for TabRight
+// and at ShadowPad+CapsuleDrawW otherwise.
 func capsuleX(tabRight bool) int {
 	if tabRight {
-		return BufW - CapsuleW
+		return BufW - CapsuleDrawW
 	}
 	return ShadowPad
 }
 
-// capsuleRect is the region the capsule is allowed to paint into.
+// capsuleRect is the region the capsule is allowed to paint into. It is the
+// *drawn* width, not the visible-at-rest width — clipping to CapsuleW would
+// throw away the MaxProtrusion overhang that keeps the capsule welded to the
+// screen edge while it protrudes.
 func capsuleRect(tabRight bool) image.Rectangle {
 	x := capsuleX(tabRight)
-	return image.Rect(x, ShadowPad, x+CapsuleW, ShadowPad+ContentH)
+	return image.Rect(x, ShadowPad, x+CapsuleDrawW, ShadowPad+ContentH)
 }
 
-// panelRect is the region that is opaque only when expanded.
+// panelRect is the region that is opaque only when expanded. It butts the
+// capsule's drawn edge, so it moves with CapsuleDrawW.
 func panelRect(tabRight bool) image.Rectangle {
 	if tabRight {
-		return image.Rect(0, ShadowPad, BufW-CapsuleW, ShadowPad+ContentH)
+		return image.Rect(0, ShadowPad, BufW-CapsuleDrawW, ShadowPad+ContentH)
 	}
-	return image.Rect(ShadowPad+CapsuleW, ShadowPad, BufW, ShadowPad+ContentH)
+	return image.Rect(ShadowPad+CapsuleDrawW, ShadowPad, BufW, ShadowPad+ContentH)
 }
 
 // cornerRadius is the radius every shape in this tab draws with: Radius
@@ -151,6 +171,8 @@ func workSegX(i int, tabRight bool) int {
 	return capsuleX(tabRight) + workInset + i*(workSegW()+workGap)
 }
 
+// workSegW divides the *visible-at-rest* CapsuleW, not CapsuleDrawW: the bar
+// has to be readable at rest, when everything past CapsuleW is off screen.
 func workSegW() int {
 	avail := CapsuleW - 2*workInset - (workSegs-1)*workGap
 	return avail / workSegs
@@ -176,9 +198,11 @@ func clipTo(dc *gg.Context, r image.Rectangle, fn func()) {
 //
 // Layout (x11, TabRight=false):
 //
-//	0            .. ShadowPad          transparent shadow padding
-//	ShadowPad    .. +CapsuleW          the capsule (always opaque)
-//	+CapsuleW    .. BufW              the panel (opaque only when Expanded)
+//	0             .. ShadowPad      transparent shadow padding
+//	ShadowPad     .. +CapsuleDrawW  the capsule (always opaque). Only its
+//	                                first CapsuleW px are on screen at rest;
+//	                                the rest hangs past the screen edge.
+//	+CapsuleDrawW .. BufW           the panel (opaque only when Expanded)
 //
 // Corner rounding rule: round the leading (left) edge of the outermost visible
 // element and never an edge that butts another element; the right edge is
@@ -232,6 +256,9 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 	}
 
 	// --- capsule ----------------------------------------------------------
+	// Shadow and halo stay CapsuleW wide, not CapsuleDrawW: the capsule's
+	// trailing edge is welded to the screen edge, so a shadow or glow there
+	// would be invisible in x11 and would only push a dark band into the panel.
 	if s.Shadow {
 		drawShadow(dc, cx, cy, float64(CapsuleW), ch, rad)
 	}
@@ -244,13 +271,13 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 	grad.AddColorStop(0.62, rgbaOf(sc.Base))
 	grad.AddColorStop(1, rgbaOf(sc.Bot))
 	clipTo(dc, capsuleRect(s.TabRight), func() {
-		dc.DrawRoundedRectangle(cx, cy, float64(CapsuleW)+rad, ch, rad)
+		dc.DrawRoundedRectangle(cx, cy, float64(CapsuleDrawW)+rad, ch, rad)
 		dc.SetFillStyle(grad)
 		dc.Fill()
 
 		// Specular hairline inset along the top and leading edges. It is what
 		// makes the capsule read as an object rather than a painted stripe.
-		dc.DrawRoundedRectangle(cx+0.5, cy+0.5, float64(CapsuleW)+rad-1, ch-1, rad)
+		dc.DrawRoundedRectangle(cx+0.5, cy+0.5, float64(CapsuleDrawW)+rad-1, ch-1, rad)
 		dc.SetRGBA(1, 1, 1, 0.30)
 		dc.SetLineWidth(1)
 		dc.Stroke()
@@ -266,6 +293,9 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 			clipTo(dc, capsuleRect(s.TabRight), func() {
 				dc.SetFontFace(f.Glyph)
 				dc.SetColor(rgbaOf(p.GlyphFG(sc.Base)))
+				// Centred in the visible-at-rest CapsuleW, not in CapsuleDrawW:
+				// the overhang is off screen, so centring on it would put the
+				// glyph half off the edge. Same reasoning as the work bar.
 				dc.DrawStringAnchored(s.Glyph, cx+float64(CapsuleW)/2, cy+ch/2, 0.5, 0.4)
 			})
 		}
