@@ -319,14 +319,42 @@ func (t *tab) setExpanded(expand bool) {
 		newX = t.restX()
 	}
 	t.opt.x = newX
-	t.win.Move(newX, t.opt.y)
 
-	// The input region is state-dependent: the panel is only clickable while
-	// expanded. Without this the revealed panel would be click-through.
-	if t.opt.argb {
+	// The input region is state-dependent — the panel is only clickable while
+	// expanded — so it has to change alongside the move. The ORDER of the two
+	// matters, and getting it wrong produces a hover flicker loop:
+	//
+	// The pointer does not move during the slide, but the window does, so the
+	// buffer coordinate under the pointer changes by the full slide distance.
+	// Expanding slides 282px left, which puts the pointer over the panel region
+	// of the buffer. If the region is still capsule-only at that instant the
+	// pointer is outside it, X delivers LeaveNotify, we collapse, the pointer is
+	// back over the capsule, EnterNotify fires, and the tab oscillates.
+	//
+	// The invariant that avoids it: the input region must never be smaller than
+	// what is under the pointer mid-transition, i.e. it must be a superset of
+	// both the before and after pointer locations. So grow it before moving and
+	// shrink it after moving:
+	//
+	//	expand:   setInputRegion(capsule+panel) -> Move left
+	//	collapse: Move right -> setInputRegion(capsule)
+	//
+	// t.opt.expanded is already assigned above, so inputRects() describes the
+	// target state in both branches.
+	reshape := func() {
+		if !t.opt.argb {
+			return
+		}
 		if err := setInputRegion(t.X, t.win.Id, t.inputRects()); err != nil {
 			slog.Warn("x11 tab input shape", "id", t.sess.ID, "err", err)
 		}
+	}
+	if expand {
+		reshape()
+		t.win.Move(newX, t.opt.y)
+	} else {
+		t.win.Move(newX, t.opt.y)
+		reshape()
 	}
 
 	if expand && t.overflow {
