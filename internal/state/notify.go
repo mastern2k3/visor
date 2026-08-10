@@ -86,7 +86,10 @@ func (s *Subscribers) Broadcast(snaps []Snapshot) {
 
 // hudDigest hashes only the fields that affect HUD rendering. Excluded:
 // LastUpdate (changes constantly), FirstSeen (doesn't change), full paths
-// (use display_cwd), pid (not rendered), wm/window/tmuxpane (not rendered).
+// (use display_cwd), pid (not rendered), wm/window/tmuxpane (not rendered),
+// StateSince (changes only alongside Activity/Waiting, which are already
+// digested — including it would add nothing but would reintroduce the
+// digest-driven flicker warned about in CLAUDE.md).
 func hudDigest(snaps []Snapshot) string {
 	h := sha256.New()
 	for _, s := range snaps {
@@ -105,6 +108,8 @@ func hudDigest(snaps []Snapshot) string {
 		h.Write([]byte(strconv.Itoa(s.BackgroundRunning)))
 		h.Write([]byte{0})
 		h.Write([]byte(s.BackgroundOutcome))
+		h.Write([]byte{0})
+		h.Write([]byte(s.Glyph))
 		h.Write([]byte{0})
 		h.Write([]byte{1})
 	}

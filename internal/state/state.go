@@ -12,10 +12,12 @@ package state
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nitzanz/visor/internal/transcript"
 )
@@ -95,6 +97,17 @@ type Session struct {
 	LastUpdate  time.Time `json:"last_update"`
 	LastWaiting time.Time `json:"last_waiting,omitempty"`
 
+	// StateSince is when (Activity, Waiting) last changed. Attention changes
+	// do NOT move it: the HUD renders "time in current state", and dismissing
+	// a session is not a state change in that sense.
+	//
+	// Deliberately NOT in the broadcast digest, and it does not need to be —
+	// it only moves when a digested field moves. Rendering elapsed from
+	// LastUpdate instead would freeze the counter, because a transcript
+	// append to an already-working session changes no digested field and so
+	// fires no broadcast.
+	StateSince time.Time `json:"state_since"`
+
 	// Ended is true once SessionEnd has fired. Ended sessions stay in the
 	// store as tombstones — excluded from Snapshot (so they vanish from the
 	// HUD) but kept so discovery's UpsertByPath returns the existing entry
@@ -123,6 +136,9 @@ type Snapshot struct {
 	BackgroundOutcome string    `json:"background_outcome"`
 	FirstSeen         time.Time `json:"first_seen"`
 	LastUpdate        time.Time `json:"last_update"`
+	DisplayName       string    `json:"display_name"`
+	Glyph             string    `json:"glyph"`
+	StateSince        time.Time `json:"state_since"`
 }
 
 // resolvedTitle is what the HUD should display. Custom (user-set) beats
@@ -187,6 +203,12 @@ func NewStore() *Store {
 		if sess.FirstSeen.IsZero() {
 			sess.FirstSeen = time.Now()
 		}
+		// Activity/Waiting are recomputed by the tailer, but StateSince needs
+		// a non-zero seed now — otherwise a hydrated session that never gets
+		// re-tailed before the HUD reads it renders as ~2562047h elapsed
+		// (time.Since(zero)), since render.ElapsedString only clamps negative
+		// durations. FirstSeen is the best available proxy for "since when".
+		sess.StateSince = sess.FirstSeen
 		if s.dismissed[sess.ID] {
 			sess.Attention = AttentionDismiss
 		}
@@ -252,10 +274,12 @@ func (s *Store) UpsertByPath(path string) *Session {
 		return s.sessions[id]
 	}
 	// Tentative: use path as the synthetic key until JSONL reveals real ID.
+	now := time.Now()
 	sess := &Session{
 		TranscriptPath: path,
 		ID:             path,
-		FirstSeen:      time.Now(),
+		FirstSeen:      now,
+		StateSince:     now,
 	}
 	s.sessions[sess.ID] = sess
 	s.byPath[path] = sess.ID
@@ -377,6 +401,7 @@ func (s *Store) ApplyTranscript(path string, lines []transcript.Line, newOffset 
 	}
 	if sess.Activity != prev {
 		changed = true
+		sess.StateSince = time.Now()
 		if sess.Activity == transcript.ActivityWaitingUser {
 			sess.LastWaiting = time.Now()
 			sess.Waiting = WaitingUser
@@ -461,6 +486,8 @@ func (s *Store) Snapshot() []Snapshot {
 			BackgroundOutcome: sess.BackgroundOutcome,
 			FirstSeen:         sess.FirstSeen,
 			LastUpdate:        sess.LastUpdate,
+			DisplayName:       projectName(sess.resolvedTitle(), sess.CWD, sess.ID),
+			StateSince:        sess.StateSince,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -470,7 +497,55 @@ func (s *Store) Snapshot() []Snapshot {
 		}
 		return out[i].FirstSeen.Before(out[j].FirstSeen)
 	})
+	assignGlyphs(out)
 	return out
+}
+
+// projectName is what the HUD shows on the panel's first line: the session
+// title if Claude or the user set one, else the cwd's basename, else a short
+// id. Computed server-side so backends stay logic-free.
+func projectName(title, cwd, id string) string {
+	if title != "" {
+		return title
+	}
+	if base := filepath.Base(cwd); cwd != "" && base != "." && base != "/" {
+		return base
+	}
+	if len(id) >= 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// assignGlyphs fills Glyph with a 1-2 character project identifier. A single
+// uppercase initial is used unless two live sessions collide on it, in which
+// case every colliding session widens to two letters — a lone widened glyph
+// would be more confusing than helpful.
+//
+// Runes, not bytes: DisplayName may be non-ASCII (accented Latin, Hebrew,
+// etc.), and slicing raw UTF-8 bytes would produce a mangled partial rune.
+func assignGlyphs(snaps []Snapshot) {
+	counts := map[string]int{}
+	for _, s := range snaps {
+		if s.DisplayName == "" {
+			continue
+		}
+		first, _ := utf8.DecodeRuneInString(s.DisplayName)
+		counts[strings.ToUpper(string(first))]++
+	}
+	for i := range snaps {
+		n := snaps[i].DisplayName
+		if n == "" {
+			continue
+		}
+		runes := []rune(n)
+		first := strings.ToUpper(string(runes[0]))
+		if counts[first] > 1 && len(runes) > 1 {
+			snaps[i].Glyph = strings.ToUpper(string(runes[:2]))
+			continue
+		}
+		snaps[i].Glyph = first
+	}
 }
 
 // dockRank: smaller = higher in the dock. Sessions are tiered so the eye

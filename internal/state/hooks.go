@@ -43,10 +43,12 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 		if p.SessionID == "" && p.TranscriptPath == "" {
 			return nil
 		}
+		now := time.Now()
 		sess = &Session{
 			ID:             firstNonEmpty(p.SessionID, p.TranscriptPath),
 			TranscriptPath: p.TranscriptPath,
-			FirstSeen:      time.Now(),
+			FirstSeen:      now,
+			StateSince:     now,
 		}
 		s.sessions[sess.ID] = sess
 		if p.TranscriptPath != "" {
@@ -126,8 +128,12 @@ func (s *Store) ApplyHook(event string, p hookpayload.Enriched) *Session {
 // edge into a waiting state. Must be called with s.mu held.
 func (s *Store) transition(sess *Session, act transcript.SessionActivity, w Waiting) {
 	prevAct := sess.Activity
+	prevWaiting := sess.Waiting
 	sess.Activity = act
 	sess.Waiting = w
+	if act != prevAct || w != prevWaiting {
+		sess.StateSince = time.Now()
+	}
 	switch {
 	case act == transcript.ActivityWaitingUser && prevAct != act:
 		sess.LastWaiting = time.Now()
