@@ -40,7 +40,7 @@ type Faces struct {
 //
 // Note: only checks path existence via os.Stat, not parseability. A font file
 // that exists but is corrupt will be returned, and parse attempts downstream
-// (in LoadFaces/LoadFont) will fail hard rather than falling back to
+// (in LoadFaces) will fail hard rather than falling back to
 // candidates. This is intentional — corrupt files are a configuration problem,
 // not a transient failure to retry.
 //

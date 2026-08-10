@@ -14,37 +14,29 @@ import (
 )
 
 const (
-	// tabGap is the vertical space in pixels between adjacent tabs.
-	tabGap = 4
-
 	// topOffset shifts the whole dock down from the top of the screen so it
 	// doesn't sit under a top bar or overlap chrome the user wants to see.
 	topOffset = 256
 
-	// Wobble animation for "working" tabs — they breathe leftward (toward
-	// the centre of the screen) with cosine easing. Each tab gets a
-	// randomized phase so adjacent tabs don't pulse in lockstep.
-	wobbleAmp    = 4.0
-	wobblePeriod = 0.9 // seconds for one full cycle
-
-	// alertProtrusion: a session with attention=needs sits this many pixels
-	// further from the right edge so it's distinguishable by shape alone, not
-	// just colour. Chosen > wobbleAmp so a needs tab is unambiguously
-	// further out than any working tab at its wobble peak.
-	alertProtrusion = 8
+	// Animation constants come from render so both backends share them.
+	// Working tabs breathe leftward (toward the centre of the screen) with
+	// cosine easing, each with a randomized phase so adjacent tabs don't pulse
+	// in lockstep. A session with attention=needs sits alertProtrusion px
+	// further from the right edge so it's distinguishable by shape alone.
+	wobbleAmp       = render.WobbleAmp
+	wobblePeriod    = render.WobblePeriod
+	alertProtrusion = render.AlertProtrusion
 
 	// tabOverflow is how many pixels the surface extends past the screen's
 	// right edge at the rest position. Chosen as alertProtrusion + wobbleAmp
 	// so that even at peak shift (alert + wobble) the buffer's right edge is
 	// still flush with or beyond the screen edge — wobble/alert always grow
 	// the visible tab leftward instead of revealing empty space.
-	tabOverflow = int(alertProtrusion) + int(wobbleAmp)
+	tabOverflow = render.AlertProtrusion + int(render.WobbleAmp)
 )
 
 // layerSurface is one tab: a wl_surface + zwlr_layer_surface_v1 pair plus
 // the shm pool that backs its frames.
-//
-// The static test surface is removed in Task 5.
 type layerSurface struct {
 	surface wl.Surface
 	ls      protocol.LayerSurfaceV1
@@ -65,10 +57,10 @@ type layerSurface struct {
 
 	// Slot and current applied right margin (in px from the screen edge). Tracked
 	// so the animation tick can detect changes and avoid unnecessary commits.
-	slot         int
-	rightMargin  int32
-	wobbleStart  time.Time
-	wobblePhase  float64
+	slot        int
+	rightMargin int32
+	wobbleStart time.Time
+	wobblePhase float64
 
 	// dirty is true when a state change happened but the most recent repaint
 	// couldn't acquire a buffer (both were in-flight). The next wl_buffer.release
@@ -80,15 +72,15 @@ type layerSurface struct {
 	// can call repaint without an extra closure argument.
 	d *dock
 
-	// Input regions: the surface is ExpandedW wide but most of it is
+	// Input regions: the surface is the full buffer wide but most of it is
 	// transparent when collapsed. Without an input region the compositor would
 	// fire pointer Enter when the cursor crossed the invisible panel area,
 	// expanding the tab before the cursor reached the visible strip.
-	//   regionTab: rightmost TabW px only (active while collapsed).
+	//   regionTab: the capsule only (active while collapsed).
 	//   regionFull:   entire surface (active while expanded, so the cursor
 	//                 can move onto the panel without firing Leave).
-	regionTab wl.Region
-	regionFull   wl.Region
+	regionTab  wl.Region
+	regionFull wl.Region
 }
 
 // newLayerSurface creates a wl_surface + zwlr_layer_surface_v1, configures
@@ -108,40 +100,46 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 	// Anchor to the top-right corner; margin_top stacks tabs vertically.
 	// ExclusiveZone -1: float above all reserved struts, don't push others.
 	ls.SetAnchor(protocol.LayerSurfaceV1AnchorTop | protocol.LayerSurfaceV1AnchorRight)
-	ls.SetSize(uint32(render.ExpandedW+tabOverflow), uint32(render.TabH))
+	// The buffer includes render.ShadowPad of transparent padding on the left,
+	// top and bottom, so the surface must be BufW x BufH — sizing it to the
+	// capsule/panel content height alone would not match the attached buffer.
+	ls.SetSize(uint32(render.BufW+tabOverflow), uint32(render.BufH))
 	ls.SetExclusiveZone(-1)
 	initialRight := restRightMargin(attention)
 	ls.SetMargin(int32(slotTopMargin(slot)), initialRight, 0, 0) // top, right, bottom, left
 	ls.SetKeyboardInteractivity(protocol.LayerSurfaceV1KeyboardInteractivityNone)
 
 	// Pre-build the two input regions used to gate pointer Enter/Leave.
-	// The surface is (ExpandedW + tabOverflow) wide; the tab strip
-	// inside the buffer extends to the right edge of the surface. Input
-	// is only sensitive in surface-local coordinates that correspond to
-	// the *opaque* region.
+	// The surface is (BufW + tabOverflow) wide; the capsule inside the buffer
+	// extends to the right edge of the surface. Input is only sensitive in
+	// surface-local coordinates that correspond to the *opaque* region — which
+	// now also excludes the transparent shadow padding above and below.
 	regionTab := d.compositor.CreateRegion()
 	regionTab.Add(
-		int32(render.ExpandedW-render.TabW), 0,
-		int32(render.TabW+tabOverflow), int32(render.TabH),
+		int32(render.BufW-render.CapsuleW), int32(render.ShadowPad),
+		int32(render.CapsuleW+tabOverflow), int32(render.ContentH),
 	)
 	regionFull := d.compositor.CreateRegion()
-	regionFull.Add(0, 0, int32(render.ExpandedW+tabOverflow), int32(render.TabH))
+	regionFull.Add(
+		0, int32(render.ShadowPad),
+		int32(render.BufW+tabOverflow), int32(render.ContentH),
+	)
 
 	ps := &layerSurface{
-		surface:      surf,
-		ls:           ls,
-		state:        st,
-		sessionID:    id,
-		activity:     activity,
-		attention:    attention,
-		log:          d.log,
-		d:            d,
-		regionTab: regionTab,
-		regionFull:   regionFull,
-		slot:         slot,
-		rightMargin:  initialRight,
-		wobbleStart:  time.Now(),
-		wobblePhase:  rand.Float64() * 2 * math.Pi,
+		surface:     surf,
+		ls:          ls,
+		state:       st,
+		sessionID:   id,
+		activity:    activity,
+		attention:   attention,
+		log:         d.log,
+		d:           d,
+		regionTab:   regionTab,
+		regionFull:  regionFull,
+		slot:        slot,
+		rightMargin: initialRight,
+		wobbleStart: time.Now(),
+		wobblePhase: rand.Float64() * 2 * math.Pi,
 	}
 
 	// Start with the tab-only input region — newly-created surfaces are
@@ -155,8 +153,8 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 			ps.ls.AckConfigure(serial)
 			d.log.Debug("layer surface configure",
 				"session", ps.sessionID,
-				"want_w", render.ExpandedW+tabOverflow,
-				"want_h", render.TabH,
+				"want_w", render.BufW+tabOverflow,
+				"want_h", render.BufH,
 				"got_w", w, "got_h", h)
 			ps.repaint(d)
 			return nil
@@ -204,16 +202,16 @@ func (s *layerSurface) repaint(d *dock) {
 			"session", s.sessionID, "expanded", s.state.Expanded)
 		return
 	}
-	img := render.DrawTab(s.state, d.font)
+	img := render.DrawTab(s.state, d.faces, d.palette)
 	buf.CopyRGBA(img.RGBA)
 	s.surface.Attach(buf.Wl, 0, 0)
 	// DamageBuffer uses buffer-local coords (no scale/transform mapping) and
 	// is the recommended request for modern clients. Cover the full buffer
 	// including the tabOverflow replication columns — otherwise compositors
-	// keep the previous buffer's pixels at cols [ExpandedW, bufW) and the
+	// keep the previous buffer's pixels at cols [renderW, bufW) and the
 	// "tip" shows a stale colour after state transitions.
-	s.surface.DamageBuffer(0, 0, int32(bufW), int32(render.TabH))
-	// Match input region to visible area: tab strip only when collapsed,
+	s.surface.DamageBuffer(0, 0, int32(bufW), int32(bufH))
+	// Match input region to visible area: capsule only when collapsed,
 	// full surface when expanded so the cursor can drift onto the panel.
 	if s.state.Expanded {
 		s.surface.SetInputRegion(s.regionFull)
@@ -253,7 +251,7 @@ func (s *layerSurface) animateTick(now time.Time) bool {
 // Starts at -tabOverflow (surface overflows the screen edge) and moves
 // rightward (toward the screen edge) as alert/wobble shifts grow.
 //
-//	rest:        -tabOverflow                 → tab width visible = TabW
+//	rest:        -tabOverflow                 → visible width = CapsuleW
 //	needs:       -tabOverflow + alertProtrusion
 //	working:     adds cosine-eased wobble [0, wobbleAmp] on top of base
 func (s *layerSurface) computeRightMargin(now time.Time) int32 {
@@ -281,9 +279,10 @@ func restRightMargin(attention string) int32 {
 }
 
 // slotTopMargin converts a slot index into a top-margin in px, including the
-// global topOffset and the per-tab gap.
+// global topOffset. render.RowPitch already leaves room for each tab's shadow
+// padding, so no extra gap is added here.
 func slotTopMargin(slot int) int {
-	return topOffset + slot*(render.TabH+tabGap)
+	return topOffset + slot*render.RowPitch
 }
 
 // destroy tears down the layer surface and releases the shm pool.

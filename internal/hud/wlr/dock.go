@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"codeberg.org/tesselslate/wl"
-	"github.com/BurntSushi/freetype-go/freetype/truetype"
 
+	"github.com/nitzanz/visor/internal/hud/config"
 	"github.com/nitzanz/visor/internal/hud/render"
 	"github.com/nitzanz/visor/internal/hud/wlr/protocol"
 )
@@ -42,9 +42,11 @@ type dock struct {
 	// Which globals were observed during initial roundtrip.
 	hasCompositor, hasShm, hasSeat, hasOutput, hasLayerShell bool
 
-	// Font used by layerSurface.repaint. Nil if font load failed (tabs
-	// will show background colour only, without text labels).
-	font *truetype.Font
+	// Render inputs used by layerSurface.repaint. faces is nil if font load
+	// failed, in which case tabs render without any text.
+	faces   *render.Faces
+	palette render.Palette
+	cfg     config.Config
 
 	// surfaces is keyed by session id. layerSurface values can be compared with
 	// == in findSurface because wl.Surface embeds a pointer to per-object data,
@@ -57,8 +59,11 @@ type dock struct {
 }
 
 func newDock() (*dock, error) {
+	cfg := config.Resolve("", nil)
 	d := &dock{
-		log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		cfg:     cfg,
+		palette: render.Theme(cfg.Theme),
 	}
 
 	// Connect to the Wayland display. NewDisplay("") falls back to
@@ -106,17 +111,17 @@ func newDock() (*dock, error) {
 		return nil, fmt.Errorf("no wl_output advertised by compositor")
 	}
 
-	// Load font; failure is non-fatal — tabs show background colour only.
-	// This is the most likely reason for missing text: install a font from the
-	// candidate list (DejaVuSansMono, LiberationMono, or NotoSansMono) or
-	// point one of the candidate paths at a valid TTF.
-	if f, err := render.LoadFont(); err != nil {
-		d.log.Warn("font load failed; tabs will show background colour only — install DejaVuSansMono, LiberationMono, or NotoSansMono",
+	// Load faces; failure is non-fatal — tabs render without text. This is the
+	// most likely reason for missing text: install a font from the candidate
+	// list (DejaVuSansMono, LiberationMono, or NotoSansMono) or point one of
+	// the candidate paths at a valid TTF.
+	if f, err := render.LoadFaces(); err != nil {
+		d.log.Warn("font load failed; tabs will render without text — install DejaVuSansMono, LiberationMono, or NotoSansMono",
 			"err", err,
 			"tried", render.FontCandidates(),
 		)
 	} else {
-		d.font = f
+		d.faces = f
 	}
 
 	d.surfaces = map[string]*layerSurface{}
@@ -329,10 +334,23 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			continue
 		}
 		seen[s.ID] = true
+		name := labelFor(s)
+		// labelFor falls back to DisplayCWD when there is no title, so drop the
+		// path in that case rather than printing it twice.
+		path := s.DisplayCWD
+		if path == name {
+			path = ""
+		}
+		// Glyph and Elapsed stay zero for now: the daemon does not yet publish
+		// glyph/state_since, and sessionView does not yet carry them.
 		st := render.TabState{
-			Color:             colorFor(s),
-			Label:             labelFor(s),
+			Activity:          s.Activity,
+			Attention:         s.Attention,
+			Waiting:           s.Waiting,
+			Name:              name,
+			Path:              path,
 			TabRight:          true,
+			Shadow:            d.cfg.Shadow,
 			BackgroundRunning: s.BackgroundRunning,
 			BackgroundOutcome: s.BackgroundOutcome,
 		}
@@ -399,10 +417,4 @@ func labelFor(s sessionView) string {
 		return s.ID[:8]
 	}
 	return s.ID
-}
-
-// colorFor maps session state to the canonical 0x00RRGGBB tab colour,
-// delegating to render.ColorFor so all backends share the same scheme.
-func colorFor(s sessionView) uint32 {
-	return render.ColorFor(s.Activity, s.Attention, s.Waiting)
 }

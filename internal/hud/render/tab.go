@@ -3,244 +3,451 @@ package render
 import (
 	"image"
 	"image/color"
-	"image/draw"
+	"math"
+	"time"
 
-	"github.com/BurntSushi/freetype-go/freetype"
-	"github.com/BurntSushi/freetype-go/freetype/truetype"
+	"github.com/fogleman/gg"
 )
 
-// Shared with both backends. Keep in sync with the x11 backend's window sizing.
+// Geometry, shared by both backends. Backends import these; they never
+// redeclare the literals.
 const (
-	TabW      = 10  // visible width when collapsed
-	TabH      = 36  // window height
-	ExpandedW = 300 // visible width when hovered
-	TextPad   = 18  // x where the cwd label begins
-	FontPt    = 13.5
-	// TextYBaseline is the freetype baseline; picked so the cap height sits
-	// centred-ish in TabH. Empirically matched to the previous x11 layout.
-	TextYBaseline = 24
+	// CapsuleW is the visible width of a tab at rest.
+	CapsuleW = 18
+	// ContentH is the height of the capsule and the expanded panel.
+	ContentH = 44
+	// ShadowPad is transparent padding reserved for the drop shadow on the
+	// left, top and bottom. There is none on the right: that edge is flush
+	// with (or past) the screen edge.
+	ShadowPad = 5
+	// ExpandedW is the visible width of the panel when hovered.
+	ExpandedW = 300
 
-	textRightPad = 8 // px reserved between text right-edge and panel edge for visual breathing room
+	// BufW/BufH are the rendered buffer dimensions.
+	BufW = ShadowPad + ExpandedW
+	BufH = ShadowPad*2 + ContentH
 
-	dotRadius     = 2 // dot is 2*dotRadius+1 px across
-	dotInset      = 2 // px from the strip's left edge to the dot's left edge
-	dotTop        = 3 // y of the topmost dot's top edge
-	dotGap        = 3 // vertical gap between stacked dots
-	dotMaxRunning = 3 // cap on running dots drawn
+	// Radius is the corner radius of the capsule and panel. Only the leading
+	// (left) corners are visibly rounded; the shape is drawn Radius wider than
+	// the element so its right corners fall outside it, and each shape is
+	// clipped to its own rect so that overhang cannot escape into a neighbour.
+	Radius = 10
+
+	// RowPitch is the vertical distance between adjacent tabs. It equals BufH
+	// so each tab's shadow lives inside its own buffer and no neighbour clips
+	// it — which matters because x11 gives every tab a separate window.
+	RowPitch = BufH
+
+	// AlertProtrusion: an attention=needs tab sits this many px further from
+	// the screen edge, so it is distinguishable by shape alone. Chosen >
+	// WobbleAmp so a needs tab is unambiguously further out than any working
+	// tab at its wobble peak.
+	AlertProtrusion = 8
+	// Wobble animation for working tabs.
+	WobbleAmp    = 4.0
+	WobblePeriod = 0.9
+
+	// Work-bar: a segmented strip along the capsule's bottom inside edge,
+	// replacing the old stacked dots which cramped at this width.
+	workSegs   = 3
+	workBarH   = 2
+	workInset  = 3
+	workGap    = 2
+	workBottom = 3 // px from the capsule's bottom edge to the bar
+
+	// Text layout inside the panel.
+	textPad      = 12 // x offset from the panel's inner edge to the text
+	textRightPad = 8  // reserved between text and the panel's far edge
+	lineGap      = 2  // vertical gap between the name and meta lines
 )
 
-const (
-	dotRunning uint32 = 0x8be0d0 // teal — task in flight
-	dotDone    uint32 = 0xa3d977 // green — batch completed ok
-	dotFailed  uint32 = 0xff7a7a // red — batch had a failure
-)
-
-// TabState is the subset of session data the renderer needs.
+// TabState is everything the renderer needs. Colour is resolved from the
+// state fields via the Palette, so backends no longer pass a packed colour.
 type TabState struct {
-	Color    uint32 // 0x00RRGGBB; high byte ignored
-	Label    string // already-resolved display label (Title || DisplayCWD || ID[:8])
-	Expanded bool   // true = full opaque panel; false = panel region is transparent
-	// TabRight controls which side of the buffer the opaque "tab strip"
-	// sits on. False (default): leftmost TabW pixels are the tab; panel
-	// extends rightward. Used by the x11 backend, whose window slides off the
-	// right edge of the screen and reveals the leftmost pixels first.
-	// True: rightmost TabW pixels are the tab; panel extends leftward.
-	// Used by the wlr backend, whose right-anchored layer surface puts buffer
-	// x=ExpandedW-1 at the screen's right edge.
+	// Objective state, used for both colour and the panel's state words.
+	Activity  string // "working" | "waiting" | "unknown"
+	Attention string // "ack" | "needs" | "dismissed"
+	Waiting   string // "" | "user" | "permission"
+
+	Glyph string // 1-2 chars centred in the capsule
+	Name  string // panel line 1
+	Path  string // panel line 2 tail (already $HOME-abbreviated)
+
+	// Elapsed is time in the current state, derived from StateSince by the
+	// caller so the renderer stays free of clocks.
+	Elapsed time.Duration
+
+	Expanded bool
+	// TabRight puts the capsule on the buffer's right edge instead of its
+	// left. False (x11): capsule at x=ShadowPad, panel extends rightward.
+	// True (wlr): capsule at the right edge, panel extends leftward.
 	TabRight bool
-	// Background work axis. BackgroundRunning > 0 draws that many running
-	// dots (capped at dotMaxRunning). When 0 and BackgroundOutcome is set,
-	// a single outcome dot is drawn instead.
+	// Shadow enables visor's own drop shadow. Disabled by config when the
+	// user prefers their compositor's shadow, or none.
+	Shadow bool
+
 	BackgroundRunning int
 	BackgroundOutcome string // "" | "done" | "failed"
+
+	// HaloPhase in [0,1) drives the permission pulse. Ignored for states
+	// whose StateColors.Glow is false.
+	HaloPhase float64
 }
 
-// TabImage is the rendered output plus metadata x11/wlr both need.
+// TabImage is the rendered output plus the metadata both backends need.
 type TabImage struct {
 	RGBA     *image.RGBA
-	Overflow bool // true if Label was wider than the panel could show
+	Overflow bool // Name was wider than the panel could show
 }
 
-// DrawTab produces an ExpandedW-by-TabH RGBA buffer with a solid
-// background and the label rendered starting at TextPad.
-//
-// When s.Expanded is false (collapsed), the panel region is cleared to fully
-// transparent RGBA{0,0,0,0} and text rendering is skipped. Which side is the
-// "tab strip" depends on s.TabRight:
-//   - false (default, x11): leftmost TabW pixels are the tab; panel is
-//     x=TabW..ExpandedW.
-//   - true (wlr): rightmost TabW pixels are the tab; panel is
-//     x=0..ExpandedW-TabW.
-//
-// When s.Expanded is true, the entire buffer is opaque and the label is drawn.
-//
-// `font` may be nil — in that case the label is skipped and Overflow is false.
-func DrawTab(s TabState, font *truetype.Font) TabImage {
-	img := image.NewRGBA(image.Rect(0, 0, ExpandedW, TabH))
-	bg := unpackRGBA(s.Color)
-	draw.Draw(img, img.Bounds(), &image.Uniform{C: bg}, image.Point{}, draw.Src)
-
-	// panelRect is the region that becomes transparent when collapsed.
-	var panelRect image.Rectangle
-	if s.TabRight {
-		panelRect = image.Rect(0, 0, ExpandedW-TabW, TabH)
-	} else {
-		panelRect = image.Rect(TabW, 0, ExpandedW, TabH)
+// capsuleX returns the buffer x of the capsule's left edge.
+func capsuleX(tabRight bool) int {
+	if tabRight {
+		return BufW - CapsuleW
 	}
+	return ShadowPad
+}
 
-	if !s.Expanded {
-		// Clear the panel region to fully transparent so compositors show
-		// the desktop through it — Wayland analogue to the x11 window-slide.
-		transparent := color.RGBA{0, 0, 0, 0}
-		draw.Draw(img, panelRect, &image.Uniform{C: transparent}, image.Point{}, draw.Src)
-		stripLeftX := 0
-		if s.TabRight {
-			stripLeftX = ExpandedW - TabW
+// capsuleRect is the region the capsule is allowed to paint into.
+func capsuleRect(tabRight bool) image.Rectangle {
+	x := capsuleX(tabRight)
+	return image.Rect(x, ShadowPad, x+CapsuleW, ShadowPad+ContentH)
+}
+
+// panelRect is the region that is opaque only when expanded.
+func panelRect(tabRight bool) image.Rectangle {
+	if tabRight {
+		return image.Rect(0, ShadowPad, BufW-CapsuleW, ShadowPad+ContentH)
+	}
+	return image.Rect(ShadowPad+CapsuleW, ShadowPad, BufW, ShadowPad+ContentH)
+}
+
+// workBarY is the buffer y of the work bar's top edge.
+func workBarY() int {
+	return ShadowPad + ContentH - workBottom - workBarH
+}
+
+// workSegX is the buffer x of segment i's left edge.
+func workSegX(i int, tabRight bool) int {
+	return capsuleX(tabRight) + workInset + i*(workSegW()+workGap)
+}
+
+func workSegW() int {
+	avail := CapsuleW - 2*workInset - (workSegs-1)*workGap
+	return avail / workSegs
+}
+
+// clipTo runs fn with all drawing clipped to r.
+//
+// gg's Pop() deliberately does *not* restore the clip mask — it copies the
+// current (post-Push) mask back over the saved one — so Push/Pop alone leaks a
+// clip into everything drawn afterwards. ResetClip is therefore explicit.
+// Only one clip is ever active at a time here, so resetting rather than
+// restoring is correct; nesting clipTo would need a different approach.
+func clipTo(dc *gg.Context, r image.Rectangle, fn func()) {
+	dc.Push()
+	dc.DrawRectangle(float64(r.Min.X), float64(r.Min.Y), float64(r.Dx()), float64(r.Dy()))
+	dc.Clip()
+	fn()
+	dc.ResetClip()
+	dc.Pop()
+}
+
+// DrawTab renders one tab into a BufW x BufH RGBA buffer.
+//
+// Layout (x11, TabRight=false):
+//
+//	0            .. ShadowPad          transparent shadow padding
+//	ShadowPad    .. +CapsuleW          the capsule (always opaque)
+//	+CapsuleW    .. BufW              the panel (opaque only when Expanded)
+//
+// Corner rounding rule: round the leading (left) edge of the outermost visible
+// element and never an edge that butts another element; the right edge is
+// always square. The capsule's left corners are always rounded — it is the
+// leading edge when collapsed in both backends, and when expanded in wlr it
+// reads as seated on the panel. The panel's left corners are rounded only for
+// TabRight (wlr), where the panel's left edge is the leading edge; in x11 the
+// panel's left edge butts the capsule, so it stays square or a rounded notch
+// appears between the two.
+//
+// `f` may be nil, in which case all text is skipped and Overflow is false.
+func DrawTab(s TabState, f *Faces, p Palette) TabImage {
+	sc := p.For(s.Activity, s.Attention, s.Waiting)
+	dc := gg.NewContext(BufW, BufH)
+
+	cx := float64(capsuleX(s.TabRight))
+	cy := float64(ShadowPad)
+	ch := float64(ContentH)
+
+	// --- panel (drawn first so the capsule overlaps its edge) ---------------
+	if s.Expanded {
+		pr := panelRect(s.TabRight)
+		px, pw := float64(pr.Min.X), float64(pr.Dx())
+		if s.Shadow {
+			drawShadow(dc, px, cy, pw, ch)
 		}
-		drawBackgroundDots(img, s, stripLeftX, bg)
-		return TabImage{RGBA: img}
-	}
-
-	out := TabImage{RGBA: img}
-	stripLeftX := 0
-	if s.TabRight {
-		stripLeftX = ExpandedW - TabW
-	}
-	drawBackgroundDots(img, s, stripLeftX, bg)
-	if font == nil || s.Label == "" {
-		return out
-	}
-
-	// Text always sits inside the panel. For TabRight, panel is on the left:
-	// text starts at TextPad and must end before the tab strip starts.
-	// For !TabRight, text starts at TextPad past the tab strip.
-	fg := contrastFG(bg)
-	// clip is the rectangle freetype is allowed to paint into — strictly the
-	// panel region, never the tab strip. Without this, long labels paint
-	// glyphs into the tab strip at cols near the right edge; the wlr backend
-	// then replicates that rightmost column into the tabOverflow tip and the
-	// user sees a text-colored sliver next to a bg-colored tab.
-	textX := TextPad
-	var clip image.Rectangle
-	var rightLimit int
-	if s.TabRight {
-		clip = image.Rect(0, 0, ExpandedW-TabW, TabH)
-		rightLimit = ExpandedW - TabW - textRightPad
-	} else {
-		clip = image.Rect(TabW, 0, ExpandedW, TabH)
-		rightLimit = ExpandedW - textRightPad
-	}
-	out.Overflow = drawText(img, font, FontPt, textX, TextYBaseline, fg, s.Label, clip, rightLimit)
-	return out
-}
-
-// fillDot paints a filled circle of radius dotRadius centered at (cx, cy)
-// with a 1px contrasting outline. No anti-aliasing — at radius 2 a plain
-// distance test reads cleanly. outline is drawn first (as a slightly larger
-// disc), then the fill on top.
-func fillDot(img *image.RGBA, cx, cy int, fill, outline color.RGBA) {
-	r := dotRadius
-	for dy := -r - 1; dy <= r+1; dy++ {
-		for dx := -r - 1; dx <= r+1; dx++ {
-			d2 := dx*dx + dy*dy
-			var c color.RGBA
-			switch {
-			case d2 <= r*r:
-				c = fill
-			case d2 <= (r+1)*(r+1):
-				c = outline
-			default:
-				continue
+		grad := gg.NewLinearGradient(0, cy, 0, cy+ch)
+		grad.AddColorStop(0, rgbaOf(p.PanelTop))
+		grad.AddColorStop(1, rgbaOf(p.PanelBot))
+		clipTo(dc, pr, func() {
+			// TabRight: left corners round, right corners pushed outside the
+			// clip by the +Radius overhang. Otherwise both edges are square.
+			if s.TabRight {
+				dc.DrawRoundedRectangle(px, cy, pw+Radius, ch, Radius)
+			} else {
+				dc.DrawRectangle(px, cy, pw, ch)
 			}
-			img.SetRGBA(cx+dx, cy+dy, c)
+			dc.SetFillStyle(grad)
+			dc.Fill()
+
+			if s.TabRight {
+				dc.DrawRoundedRectangle(px+0.5, cy+0.5, pw+Radius-1, ch-1, Radius)
+			} else {
+				dc.DrawRectangle(px+0.5, cy+0.5, pw-1, ch-1)
+			}
+			dc.SetColor(rgbaOf(p.PanelBorder))
+			dc.SetLineWidth(1)
+			dc.Stroke()
+		})
+	}
+
+	// --- capsule ----------------------------------------------------------
+	if s.Shadow {
+		drawShadow(dc, cx, cy, float64(CapsuleW), ch)
+	}
+	if sc.Glow {
+		drawHalo(dc, cx, cy, float64(CapsuleW), ch, sc.Halo, s.HaloPhase)
+	}
+
+	grad := gg.NewLinearGradient(0, cy, 0, cy+ch)
+	grad.AddColorStop(0, rgbaOf(sc.Top))
+	grad.AddColorStop(0.62, rgbaOf(sc.Base))
+	grad.AddColorStop(1, rgbaOf(sc.Bot))
+	clipTo(dc, capsuleRect(s.TabRight), func() {
+		dc.DrawRoundedRectangle(cx, cy, float64(CapsuleW)+Radius, ch, Radius)
+		dc.SetFillStyle(grad)
+		dc.Fill()
+
+		// Specular hairline inset along the top and leading edges. It is what
+		// makes the capsule read as an object rather than a painted stripe.
+		dc.DrawRoundedRectangle(cx+0.5, cy+0.5, float64(CapsuleW)+Radius-1, ch-1, Radius)
+		dc.SetRGBA(1, 1, 1, 0.30)
+		dc.SetLineWidth(1)
+		dc.Stroke()
+	})
+
+	// --- work bar ---------------------------------------------------------
+	drawWorkBar(dc, s, p)
+
+	overflow := false
+	if f != nil {
+		// --- glyph --------------------------------------------------------
+		if s.Glyph != "" {
+			clipTo(dc, capsuleRect(s.TabRight), func() {
+				dc.SetFontFace(f.Glyph)
+				dc.SetColor(rgbaOf(p.GlyphFG(sc.Base)))
+				dc.DrawStringAnchored(s.Glyph, cx+float64(CapsuleW)/2, cy+ch/2, 0.5, 0.4)
+			})
+		}
+
+		// --- panel text ---------------------------------------------------
+		if s.Expanded {
+			overflow = drawPanelText(dc, s, f, p)
 		}
 	}
+
+	// gg hands back the same *image.RGBA it has been drawing into, so this is
+	// built once, after every draw call above.
+	return TabImage{RGBA: dc.Image().(*image.RGBA), Overflow: overflow}
 }
 
-// drawBackgroundDots paints running/outcome dots onto the visible tip strip.
-// stripLeftX is the buffer x of the strip's left edge (0 for x11; ExpandedW-TabW
-// for wlr). bg is the strip color, used to pick a contrasting outline.
-func drawBackgroundDots(img *image.RGBA, s TabState, stripLeftX int, bg color.RGBA) {
-	outline := contrastFG(bg)
-	cx := stripLeftX + dotInset + dotRadius
-	paintDot := func(i int, packed uint32) {
-		cy := dotTop + dotRadius + i*(2*dotRadius+1+dotGap)
-		fillDot(img, cx, cy, unpackRGBA(packed), outline)
-	}
-	if s.BackgroundRunning > 0 {
-		n := min(s.BackgroundRunning, dotMaxRunning)
-		for i := 0; i < n; i++ {
-			paintDot(i, dotRunning)
+// drawPanelText renders the two panel lines and reports whether the name
+// overflowed the available width. Text is clipped to the panel so a long name
+// can never bleed into the capsule.
+func drawPanelText(dc *gg.Context, s TabState, f *Faces, p Palette) (overflow bool) {
+	pr := panelRect(s.TabRight)
+
+	textX := float64(pr.Min.X + textPad)
+	// The panel's far edge is its Max.X in both orientations: for x11 that is
+	// the buffer edge, for wlr it is where the capsule begins.
+	limit := float64(pr.Max.X - textRightPad)
+
+	// Vertical layout: centre the two-line block in the content height.
+	nm := f.Name.Metrics()
+	mm := f.Meta.Metrics()
+	nameH := float64(nm.Ascent.Ceil() + nm.Descent.Ceil())
+	metaH := float64(mm.Ascent.Ceil() + mm.Descent.Ceil())
+	blockH := nameH + lineGap + metaH
+	top := float64(ShadowPad) + (float64(ContentH)-blockH)/2
+	nameBase := top + float64(nm.Ascent.Ceil())
+	metaBase := nameBase + float64(nm.Descent.Ceil()) + lineGap + float64(mm.Ascent.Ceil())
+
+	clipTo(dc, pr, func() {
+		// Line 1: project name.
+		dc.SetFontFace(f.Name)
+		dc.SetColor(rgbaOf(p.PanelName))
+		dc.DrawString(s.Name, textX, nameBase)
+		nw, _ := dc.MeasureString(s.Name)
+		overflow = textX+nw > limit
+
+		// Line 2: state words (tinted) · elapsed · path.
+		sc := p.For(s.Activity, s.Attention, s.Waiting)
+		dc.SetFontFace(f.Meta)
+		x := textX
+		words := StateWords(s.Activity, s.Attention, s.Waiting)
+		dc.SetColor(rgbaOf(sc.Base))
+		dc.DrawString(words, x, metaBase)
+		w, _ := dc.MeasureString(words)
+		x += w
+
+		sep := " · "
+		dc.SetColor(rgbaOf(p.PanelMeta))
+		dc.DrawString(sep, x, metaBase)
+		w, _ = dc.MeasureString(sep)
+		x += w
+
+		el := ElapsedString(s.Elapsed)
+		dc.SetColor(rgbaOf(p.PanelElapsed))
+		dc.DrawString(el, x, metaBase)
+		w, _ = dc.MeasureString(el)
+		x += w
+
+		if s.Path != "" {
+			dc.SetColor(rgbaOf(p.PanelMeta))
+			dc.DrawString(sep+s.Path, x, metaBase)
 		}
+	})
+	return overflow
+}
+
+// drawWorkBar paints the segmented background-work indicator. Running work
+// fills that many segments; otherwise a single segment carries the outcome.
+// Nothing is drawn when there is neither.
+//
+// Segments are plain rectangles: at workSegW x workBarH (2x2 px) a corner
+// radius would cover each pixel only partially, so the segment colour would
+// arrive on screen blended with the capsule gradient underneath instead of as
+// itself.
+func drawWorkBar(dc *gg.Context, s TabState, p Palette) {
+	var fill uint32
+	n := 0
+	switch {
+	case s.BackgroundRunning > 0:
+		n = min(s.BackgroundRunning, workSegs)
+		fill = p.WorkRunning
+	case s.BackgroundOutcome == "done":
+		n, fill = 1, p.WorkDone
+	case s.BackgroundOutcome == "failed":
+		n, fill = 1, p.WorkFailed
+	default:
 		return
 	}
-	switch s.BackgroundOutcome {
-	case "done":
-		paintDot(0, dotDone)
-	case "failed":
-		paintDot(0, dotFailed)
+	y := float64(workBarY())
+	segW := float64(workSegW())
+	for i := 0; i < workSegs; i++ {
+		c := p.WorkOff
+		if i < n {
+			c = fill
+		}
+		dc.DrawRectangle(float64(workSegX(i, s.TabRight)), y, segW, workBarH)
+		dc.SetColor(rgbaOf(c))
+		dc.Fill()
 	}
 }
 
-// drawText renders `text` into img using freetype directly. Returns true if
-// the rendered text width exceeded rightLimit (pixels from x=0).
-func drawText(img *image.RGBA, font *truetype.Font, ptSize float64, x, yBaseline int, fg color.Color, text string, clip image.Rectangle, rightLimit int) (overflow bool) {
-	c := freetype.NewContext()
-	c.SetDPI(72)
-	c.SetFont(font)
-	c.SetFontSize(ptSize)
-	c.SetClip(clip)
-	c.SetDst(img)
-	c.SetSrc(&image.Uniform{C: fg})
-
-	pt := freetype.Pt(x, yBaseline)
-	end, err := c.DrawString(text, pt)
-	if err != nil {
-		return false
-	}
-	// textRightPx is freetype's pen-advance after the final glyph, which differs
-	// from a true glyph bounding-box right edge by at most one side-bearing.
-	// Close enough for an overflow boolean.
-	textRightPx := int(end.X >> 6)
-	return textRightPx > rightLimit
+// drawShadow paints a blurred dark shape offset 1px down, behind whatever is
+// drawn next. The blur is a three-pass box blur, a good enough gaussian
+// approximation at this radius.
+//
+// Allocating a full-buffer context per call is deliberate and not a hot path:
+// tab rendering is event-driven (state change, hover, or a once-per-second
+// elapsed tick on an expanded tab). The 30Hz animation loop only moves
+// windows — it never re-renders — so there is nothing here to optimise.
+func drawShadow(dc *gg.Context, x, y, w, h float64) {
+	sh := gg.NewContext(BufW, BufH)
+	sh.DrawRoundedRectangle(x, y+1, w+Radius, h, Radius)
+	sh.SetRGBA(0, 0, 0, 0.55)
+	sh.Fill()
+	dc.DrawImage(boxBlur(sh.Image().(*image.RGBA), 3, 3), 0, 0)
 }
 
-// unpackRGBA converts a packed 0xRRGGBB to an opaque color.RGBA.
-func unpackRGBA(c uint32) color.RGBA {
+// drawHalo paints a soft coloured glow around the capsule, pulsing with phase.
+// Only used for the permission state.
+func drawHalo(dc *gg.Context, x, y, w, h float64, halo uint32, phase float64) {
+	// (1-cos)/2 maps phase to [0,1] with zero derivative at the endpoints, so
+	// the pulse eases rather than snapping at its extremes.
+	t := (1 - math.Cos(phase*2*math.Pi)) / 2
+	alpha := 0.25 + 0.35*t
+	c := rgbaOf(halo)
+	g := gg.NewContext(BufW, BufH)
+	g.DrawRoundedRectangle(x-2, y-2, w+Radius+4, h+4, Radius+2)
+	g.SetRGBA(float64(c.R)/255, float64(c.G)/255, float64(c.B)/255, alpha)
+	g.Fill()
+	dc.DrawImage(boxBlur(g.Image().(*image.RGBA), 4, 2), 0, 0)
+}
+
+// boxBlur runs `passes` box-blur passes of the given radius over a
+// premultiplied RGBA image.
+func boxBlur(src *image.RGBA, r, passes int) *image.RGBA {
+	cur := src
+	for i := 0; i < passes; i++ {
+		cur = boxBlurOnce(cur, r)
+	}
+	return cur
+}
+
+func boxBlurOnce(src *image.RGBA, r int) *image.RGBA {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	// Separable: horizontal pass into tmp, vertical pass into dst. O(n*r)
+	// rather than the O(n*r^2) a naive 2D kernel would cost.
+	tmp := image.NewRGBA(b)
+	dst := image.NewRGBA(b)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var sr, sg, sb, sa, n int
+			for d := -r; d <= r; d++ {
+				px := x + d
+				if px < 0 || px >= w {
+					continue
+				}
+				c := src.RGBAAt(px, y)
+				sr += int(c.R)
+				sg += int(c.G)
+				sb += int(c.B)
+				sa += int(c.A)
+				n++
+			}
+			tmp.SetRGBA(x, y, color.RGBA{uint8(sr / n), uint8(sg / n), uint8(sb / n), uint8(sa / n)})
+		}
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var sr, sg, sb, sa, n int
+			for d := -r; d <= r; d++ {
+				py := y + d
+				if py < 0 || py >= h {
+					continue
+				}
+				c := tmp.RGBAAt(x, py)
+				sr += int(c.R)
+				sg += int(c.G)
+				sb += int(c.B)
+				sa += int(c.A)
+				n++
+			}
+			dst.SetRGBA(x, y, color.RGBA{uint8(sr / n), uint8(sg / n), uint8(sb / n), uint8(sa / n)})
+		}
+	}
+	return dst
+}
+
+// rgbaOf converts a packed 0xRRGGBB to an opaque color.RGBA.
+func rgbaOf(c uint32) color.RGBA {
 	return color.RGBA{
 		R: uint8((c >> 16) & 0xff),
 		G: uint8((c >> 8) & 0xff),
 		B: uint8(c & 0xff),
 		A: 0xff,
 	}
-}
-
-// ColorFor maps session state (activity, attention, waiting) to the canonical
-// 0x00RRGGBB tab colour shared by all backends. Both x11 and wlr call this
-// so the colour scheme never drifts between backends.
-func ColorFor(activity, attention, waiting string) uint32 {
-	switch {
-	case attention == "needs" && waiting == "permission":
-		return 0xff7a7a // red — blocked on approval
-	case attention == "needs":
-		return 0xebcb8b // amber — waiting for user
-	case attention == "dismissed":
-		return 0x3b414e // dim — silenced
-	case activity == "working":
-		return 0x88c0d0 // cyan — busy
-	default:
-		return 0x6b7280 // grey — idle/ack
-	}
-}
-
-// contrastFG returns a foreground colour that reads well against bg.
-// Cheap luminance check (Rec. 601 weights): anything bright gets near-black
-// text, anything dark gets near-white. The 140 threshold is empirical —
-// picked to flip at roughly mid-grey, matched to the previous x11 behavior.
-func contrastFG(bg color.RGBA) color.RGBA {
-	lum := (int(bg.R)*299 + int(bg.G)*587 + int(bg.B)*114) / 1000
-	if lum > 140 {
-		return color.RGBA{0x10, 0x14, 0x1c, 0xff}
-	}
-	return color.RGBA{0xe5, 0xe9, 0xf0, 0xff}
 }

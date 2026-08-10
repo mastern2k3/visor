@@ -11,6 +11,8 @@ import (
 	"github.com/jezek/xgbutil/xevent"
 	"github.com/jezek/xgbutil/xgraphics"
 	"github.com/jezek/xgbutil/xwindow"
+
+	"github.com/nitzanz/visor/internal/hud/render"
 )
 
 // helpTabID is the synthetic sessionView.ID for the help "tab" at
@@ -19,7 +21,8 @@ import (
 const helpTabID = "__visor_help__"
 
 // helpTabSession is the synthesized state for the help tab. Activity/
-// attention are chosen so colorFor() returns the neutral grey.
+// attention are chosen so Palette.For returns the neutral Ack colours — the
+// help tab is not a session and must not look like one needing attention.
 var helpTabSession = sessionView{
 	ID:         helpTabID,
 	Activity:   "waiting",
@@ -36,10 +39,10 @@ type helpRow struct {
 }
 
 // helpContent returns the rows shown in the help screen. Legend colors are
-// pulled live from colorFor() so changes there stay in sync.
-func helpContent() []helpRow {
+// pulled live from the active palette so a theme change stays in sync.
+func helpContent(p render.Palette) []helpRow {
 	col := func(act, att, wait string) uint32 {
-		return colorFor(sessionView{Activity: act, Attention: att, Waiting: wait})
+		return p.For(act, att, wait).Base
 	}
 	return []helpRow{
 		{heading: true, label: "Visor — Claude session dock"},
@@ -81,14 +84,15 @@ const (
 
 // helpWindow is the centered popup that explains the dock's visual language.
 type helpWindow struct {
-	X   *xgbutil.XUtil
-	win *xwindow.Window
-	im  *xgraphics.Image
+	X       *xgbutil.XUtil
+	win     *xwindow.Window
+	im      *xgraphics.Image
+	palette render.Palette
 }
 
 // openHelp creates and maps the centered help window. Returns nil with an
 // error if the X window can't be created.
-func openHelp(X *xgbutil.XUtil, mon monitor, font *truetype.Font, onClose func()) (*helpWindow, error) {
+func openHelp(X *xgbutil.XUtil, mon monitor, font *truetype.Font, palette render.Palette, onClose func()) (*helpWindow, error) {
 	win, err := xwindow.Generate(X)
 	if err != nil {
 		return nil, err
@@ -112,7 +116,7 @@ func openHelp(X *xgbutil.XUtil, mon monitor, font *truetype.Font, onClose func()
 	})
 	_ = ewmh.WmNameSet(X, win.Id, "visor-help")
 
-	h := &helpWindow{X: X, win: win}
+	h := &helpWindow{X: X, win: win, palette: palette}
 	h.render(font)
 	xevent.ButtonPressFun(func(X *xgbutil.XUtil, ev xevent.ButtonPressEvent) {
 		h.close()
@@ -138,7 +142,7 @@ func (h *helpWindow) render(font *truetype.Font) {
 		fg := rgba(helpFg)
 		head := rgba(helpHead)
 		y := helpTop
-		for _, r := range helpContent() {
+		for _, r := range helpContent(h.palette) {
 			textX := helpLeft
 			if r.indent {
 				textX += helpIndent + swatchSize + swatchPad
@@ -190,4 +194,3 @@ func fillRect(im *xgraphics.Image, x, y, w, h int, c color.RGBA) {
 		}
 	}
 }
-

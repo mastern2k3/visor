@@ -18,9 +18,9 @@ const (
 	// tab strip leftward instead of leaving an empty gap on the right.
 	// The extra columns are filled by duplicating the rightmost rendered
 	// column, which extends the tab strip (or expanded panel) rightward.
-	renderW = render.ExpandedW
-	bufW    = render.ExpandedW + tabOverflow
-	bufH    = render.TabH
+	renderW = render.BufW
+	bufW    = render.BufW + tabOverflow
+	bufH    = render.BufH
 	bufStri = bufW * 4 // 4 bytes per pixel, ARGB8888
 	bufSize = bufStri * bufH
 )
@@ -128,7 +128,7 @@ func (p *shmPool) close() {
 	}
 }
 
-// CopyRGBA copies an *image.RGBA (R,G,B,A byte order, renderW × bufH) into
+// CopyRGBA copies an *image.RGBA (R,G,B,A byte order, renderW x bufH) into
 // the destination buffer (bufW × bufH, BGRA byte order — what wl_shm
 // ARGB8888 expects on a little-endian host).
 //

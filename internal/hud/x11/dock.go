@@ -2,6 +2,7 @@ package x11
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -13,6 +14,7 @@ import (
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/xevent"
 
+	"github.com/nitzanz/visor/internal/hud/config"
 	"github.com/nitzanz/visor/internal/hud/render"
 )
 
@@ -20,11 +22,19 @@ import (
 // by session ID. It selects between X events and incoming snapshot updates
 // from the visor daemon subscription.
 type dock struct {
-	X       *xgbutil.XUtil
-	mon     monitor
-	log     *slog.Logger
+	X    *xgbutil.XUtil
+	mon  monitor
+	log  *slog.Logger
 	tabs map[string]*tab // session id → window
-	font    *truetype.Font     // shared across tabs; loaded once at startup
+
+	// Render inputs, loaded/resolved once at startup and shared across tabs.
+	faces   *render.Faces
+	palette render.Palette
+	cfg     config.Config
+
+	// tipFont backs the two remaining xgraphics text paths (overflow tooltip,
+	// help window), which draw with freetype rather than gg.
+	tipFont *truetype.Font
 
 	// Synthetic "help" tab pinned at slot 0; clicking it toggles helpW.
 	helpT *tab
@@ -41,16 +51,25 @@ func newDock() (*dock, error) {
 		X.Conn().Close()
 		return nil, err
 	}
+	cfg := config.Resolve("", nil)
 	d := &dock{
 		X:       X,
 		mon:     mon,
 		log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tabs: map[string]*tab{},
+		tabs:    map[string]*tab{},
+		cfg:     cfg,
+		palette: render.Theme(cfg.Theme),
 	}
-	if f, ferr := render.LoadFont(); ferr != nil {
-		d.log.Warn("font load failed; expanded tabs will be blank", "err", ferr)
+	if f, ferr := render.LoadFaces(); ferr != nil {
+		d.log.Warn("font load failed; tabs will render without text",
+			"err", ferr, "tried", render.FontCandidates())
 	} else {
-		d.font = f
+		d.faces = f
+	}
+	if f, ferr := loadTipFont(); ferr != nil {
+		d.log.Warn("tooltip/help font load failed; those windows will be blank", "err", ferr)
+	} else {
+		d.tipFont = f
 	}
 	d.log.Info("X connected", "mon_x", mon.x, "mon_y", mon.y, "mon_w", mon.w, "mon_h", mon.h)
 	return d, nil
@@ -132,13 +151,15 @@ func (d *dock) animate(now time.Time) {
 // click handler to toggle the help window.
 func (d *dock) makeHelpTab() error {
 	y := d.mon.y + dockTopMargin
-	color := colorFor(helpTabSession)
-	t, err := newTab(d.X, d.mon, tabOpts{y: y, color: color})
+	t, err := newTab(d.X, d.mon, tabOpts{y: y, color: d.bgPixel(helpTabSession)})
 	if err != nil {
 		return err
 	}
 	t.sess = helpTabSession
-	t.font = d.font
+	t.faces = d.faces
+	t.palette = d.palette
+	t.shadow = d.cfg.Shadow
+	t.tipFont = d.tipFont
 	t.clickFn = func(button byte) {
 		// Any button toggles the help window. Using a goroutine isn't
 		// necessary here (no IPC), but X calls from the event handler are
@@ -148,7 +169,7 @@ func (d *dock) makeHelpTab() error {
 			d.helpW = nil
 			return
 		}
-		hw, herr := openHelp(d.X, d.mon, d.font, func() {
+		hw, herr := openHelp(d.X, d.mon, d.tipFont, d.palette, func() {
 			d.helpW = nil
 		})
 		if herr != nil {
@@ -180,11 +201,32 @@ func (d *dock) quit() {
 	d.X.Sync()
 }
 
+// loadTipFont parses the system mono font with freetype for the two windows
+// that still draw text through xgraphics (the overflow tooltip and the help
+// screen). render.LoadFont is gone — render now exposes opentype faces for gg
+// — but xgraphics.Image.Text only accepts a freetype *truetype.Font, so the
+// parse lives here until those windows are ported too.
+func loadTipFont() (*truetype.Font, error) {
+	p, err := render.FontPath()
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("read font %s: %w", p, err)
+	}
+	ft, err := truetype.Parse(b)
+	if err != nil {
+		return nil, fmt.Errorf("parse font %s: %w", p, err)
+	}
+	return ft, nil
+}
+
 // dock layout constants — shared by help tab positioning and snapshot
-// application so they stay in sync.
+// application so they stay in sync. Vertical spacing itself comes from
+// render.RowPitch, which already includes each tab's shadow padding.
 const (
 	dockTopMargin = 140 // start lower on the screen for easier reach
-	dockGap       = 8
 )
 
 // applySnapshot diffs the incoming session list against current tabs
@@ -197,10 +239,7 @@ const (
 // `ctl list` for debugging) and reappear when their next state change
 // re-arms attention.
 func (d *dock) applySnapshot(snap []sessionView) {
-	const (
-		topMargin = dockTopMargin
-		gap       = dockGap
-	)
+	const topMargin = dockTopMargin
 
 	visible := snap[:0:0]
 	for _, s := range snap {
@@ -228,28 +267,32 @@ func (d *dock) applySnapshot(snap []sessionView) {
 	// Open or update one tab per snapshot entry. Slot 0 is the help
 	// tab, so session tabs start at slot 1.
 	for i, s := range snap {
-		y := d.mon.y + topMargin + (i+1)*(tabH+gap)
-		color := colorFor(s)
+		y := d.mon.y + topMargin + (i+1)*render.RowPitch
 		t, ok := d.tabs[s.ID]
 		if !ok {
-			nt, err := newTab(d.X, d.mon, tabOpts{y: y, color: color})
+			nt, err := newTab(d.X, d.mon, tabOpts{y: y, color: d.bgPixel(s)})
 			if err != nil {
 				d.log.Warn("tab create failed", "id", s.ID, "err", err)
 				continue
 			}
 			nt.sess = s
-			nt.font = d.font
+			nt.faces = d.faces
+			nt.palette = d.palette
+			nt.shadow = d.cfg.Shadow
+			nt.tipFont = d.tipFont
 			nt.render() // initial paint
 			d.tabs[s.ID] = nt
 			continue
 		}
-		t.update(s, y, color)
+		t.update(s, y)
 	}
 	d.X.Sync()
 }
 
-// colorFor maps session state to a 0xRRGGBB tab colour.
-// It delegates to render.ColorFor so the colour scheme is shared with wlr.
-func colorFor(s sessionView) uint32 {
-	return render.ColorFor(s.Activity, s.Attention, s.Waiting)
+// bgPixel is the window background colour used until the first pixmap paint
+// lands. The rendered buffer covers the whole window, so this only matters for
+// the instant between Map and the first XDraw; the capsule base colour is the
+// least jarring thing to show there.
+func (d *dock) bgPixel(s sessionView) uint32 {
+	return d.palette.For(s.Activity, s.Attention, s.Waiting).Base & 0x00ffffff
 }

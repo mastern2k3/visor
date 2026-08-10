@@ -24,42 +24,44 @@ import (
 // Window dimensions and visibility regions.
 //
 // Instead of resizing the window between "narrow tab" and "wide panel",
-// the window is *always* expandedW wide. We anchor its right edge well
-// past the screen edge so only the leftmost tabW pixels are visible.
-// Hover = slide leftward; collapse = slide back. Width never changes,
-// so the rendered image (bg + cwd text) stays intact across states.
+// the window is *always* the full rendered buffer wide. We anchor its right
+// edge well past the screen edge so only the leftmost collapsedVisibleW
+// pixels are visible. Hover = slide leftward; collapse = slide back. Width
+// never changes, so the rendered image stays intact across states.
 //
-// Layout of the rendered image (window-relative X):
+// Layout of the rendered image (window-relative X) — see render.DrawTab:
 //
-//	0 .. tabW        : pure bg color — this is what shows as the "tab"
-//	tabW .. textPad  : padding gap between tab and text
-//	textPad .. expandedW: cwd text
+//	0 .. ShadowPad             : transparent shadow padding
+//	ShadowPad .. +CapsuleW     : the capsule
+//	+CapsuleW .. BufW          : the panel
 const (
-	tabW      = render.TabW
-	tabH      = render.TabH
-	expandedW = render.ExpandedW
-	textPad   = render.TextPad
-	fontPt    = render.FontPt
+	bufW = render.BufW
+	bufH = render.BufH
+	// collapsedVisibleW is how much of the buffer stays on screen at rest:
+	// the capsule plus the shadow padding to its left. The panel and the
+	// capsule's own width are no longer the same number, so the slide
+	// arithmetic can't use capsuleW alone.
+	collapsedVisibleW = render.ShadowPad + render.CapsuleW
 )
 
-// Wobble animation for "working" tabs. We oscillate leftward (never
-// rightward — that would push the window past the screen edge) with cosine
-// easing. Each tab gets a randomized phase so they breathe independently.
+// Animation constants now come from render so both backends share them.
+// Working tabs oscillate leftward (never rightward — that would push the
+// window past the screen edge) with cosine easing; each tab gets a randomized
+// phase so they breathe independently. A tab with attention=needs sits
+// alertProtrusion px further left than its collapsed rest position, so the
+// user can spot "you need to do something here" by shape alone.
 const (
-	wobbleAmp    = 4.0
-	wobblePeriod = 0.9 // seconds for one full cycle
+	wobbleAmp       = render.WobbleAmp
+	wobblePeriod    = render.WobblePeriod
+	alertProtrusion = render.AlertProtrusion
 )
-
-// alertProtrusion: when a session is attention=needs it sticks out this
-// many px past the collapsed rest position. Picked > wobbleAmp so a needs
-// tab is unambiguously further left than any working tab at its
-// wobble peak. The user can spot "you need to do something here" by
-// shape alone, not just color.
-const alertProtrusion = 8
 
 type tabOpts struct {
-	x, y     int    // absolute X / Y on the root (current position)
-	rightX   int    // x coordinate of the screen edge (mon.x + mon.w)
+	x, y   int // absolute X / Y on the root (current position)
+	rightX int // x coordinate of the screen edge (mon.x + mon.w)
+	// color is the window's background pixel, read once at creation — see
+	// dock.bgPixel. Tab colour itself lives in the rendered buffer now, so
+	// this is not updated when state changes.
 	color    uint32 // 0xRRGGBB
 	expanded bool
 }
@@ -71,7 +73,23 @@ type tab struct {
 	opt  tabOpts
 	sess sessionView
 
-	font *truetype.Font // shared with the dock; may be nil if loadFont failed
+	// faces/palette/shadow are the render inputs, shared with the dock.
+	// faces may be nil if font loading failed — DrawTab then skips all text.
+	faces   *render.Faces
+	palette render.Palette
+	shadow  bool
+
+	// tipFont is the freetype font used by the legacy xgraphics text paths
+	// (the overflow tooltip and the help window). render.LoadFont is gone, so
+	// the dock parses this one itself; it disappears when those two paths move
+	// to gg + render.Faces.
+	tipFont *truetype.Font
+
+	// lastState/rendered memoize the last painted TabState so update() can
+	// skip a repaint when nothing observable changed. This replaces the old
+	// colour/label comparison, which cannot see the new state-derived fields.
+	lastState render.TabState
+	rendered  bool
 
 	wobblePhase float64
 	wobbleStart time.Time
@@ -94,27 +112,17 @@ type tab struct {
 	clickFn func(button byte)
 }
 
-// update repositions and recolors the tab if anything changed.
+// update repositions and repaints the tab if anything changed.
 // Reusing the same X window across updates is much cheaper than
-// destroy+create, and avoids brief visual flicker. The rendered image
-// is regenerated only when color or text changed.
-func (t *tab) update(s sessionView, y int, color uint32) {
-	prevSess := t.sess
-	prevColor := t.opt.color
+// destroy+create, and avoids brief visual flicker. render() itself is a no-op
+// when the rendered state is unchanged.
+func (t *tab) update(s sessionView, y int) {
 	t.sess = s
 	if y != t.opt.y {
 		t.opt.y = y
 		t.win.Move(t.x(), y)
 	}
-	if color != t.opt.color {
-		t.opt.color = color
-	}
-	if color != prevColor ||
-		displayLabel(s) != displayLabel(prevSess) ||
-		s.BackgroundRunning != prevSess.BackgroundRunning ||
-		s.BackgroundOutcome != prevSess.BackgroundOutcome {
-		t.render()
-	}
+	t.render()
 }
 
 // x returns the X coordinate of the right-anchored tab.
@@ -127,7 +135,7 @@ func (t *tab) x() int {
 // needing attention sit further left so they're visible at a glance even
 // without inspecting color.
 func (t *tab) restX() int {
-	base := t.opt.rightX - tabW
+	base := t.opt.rightX - collapsedVisibleW
 	if t.sess.Attention == "needs" {
 		return base - alertProtrusion
 	}
@@ -167,14 +175,14 @@ func newTab(X *xgbutil.XUtil, mon monitor, opt tabOpts) (*tab, error) {
 	}
 
 	opt.rightX = mon.x + mon.w
-	opt.x = opt.rightX - tabW
+	opt.x = opt.rightX - collapsedVisibleW
 	bgPixel := opt.color & 0x00_ff_ff_ff // 24-bit colour (no alpha on default visual)
 
-	// The window is always expandedW wide; only its X position changes
+	// The window is always bufW wide; only its X position changes
 	// between states. The off-screen-right portion is clipped by X.
 	if err := win.CreateChecked(
 		X.RootWin(),
-		opt.x, opt.y, expandedW, tabH,
+		opt.x, opt.y, bufW, bufH,
 		xproto.CwBackPixel|xproto.CwOverrideRedirect|xproto.CwEventMask,
 		bgPixel,
 		1, // override-redirect = true
@@ -221,8 +229,8 @@ func newTab(X *xgbutil.XUtil, mon monitor, opt tabOpts) (*tab, error) {
 	xevent.LeaveNotifyFun(t.onLeave).Connect(X, win.Id)
 
 	win.Map()
-	// First render happens once the font is wired in by the dock (it's
-	// assigned right after newTab returns). The dock calls render()
+	// First render happens once faces/palette are wired in by the dock (they
+	// are assigned right after newTab returns). The dock calls render()
 	// explicitly for the initial draw.
 	return t, nil
 }
@@ -297,7 +305,7 @@ func (t *tab) setExpanded(expand bool) {
 	t.opt.expanded = expand
 	var newX int
 	if expand {
-		newX = t.opt.rightX - expandedW
+		newX = t.opt.rightX - bufW
 	} else {
 		newX = t.restX()
 	}
@@ -313,6 +321,10 @@ func (t *tab) setExpanded(expand bool) {
 
 // Tooltip layout constants.
 const (
+	// tipFontPt matches render.NamePt: the tooltip shows the same string as
+	// the panel's name line, so the two should be the same size.
+	tipFontPt = render.NamePt
+
 	tipPadX   = 10
 	tipPadY   = 5
 	tipGapY   = 4 // gap between tooltip and expanded panel
@@ -324,11 +336,11 @@ const (
 // containing the full label. We render once per show; on collapse it's
 // destroyed (cheaper than maintaining a hidden window).
 func (t *tab) showTooltip() {
-	if t.font == nil || t.tooltipWin != nil {
+	if t.tipFont == nil || t.tooltipWin != nil {
 		return
 	}
 	text := displayLabel(t.sess)
-	textW, textH := xgraphics.Extents(t.font, fontPt, text)
+	textW, textH := xgraphics.Extents(t.tipFont, tipFontPt, text)
 	w := textW + 2*tipPadX
 	h := textH + 2*tipPadY
 
@@ -340,7 +352,7 @@ func (t *tab) showTooltip() {
 	// Fall back below if it would clip the top of the monitor.
 	// (We don't know the screen origin here; assume y >= 0 means OK.)
 	if y < 0 {
-		y = t.opt.y + tabH + tipGapY
+		y = t.opt.y + bufH + tipGapY
 	}
 
 	win, err := xwindow.Generate(t.X)
@@ -382,7 +394,7 @@ func (t *tab) showTooltip() {
 		im.Set(0, yy, border)
 		im.Set(w-1, yy, border)
 	}
-	_, _, _ = im.Text(tipPadX, tipPadY, color.RGBA{0xe5, 0xe9, 0xf0, 0xff}, fontPt, t.font, text)
+	_, _, _ = im.Text(tipPadX, tipPadY, color.RGBA{0xe5, 0xe9, 0xf0, 0xff}, tipFontPt, t.tipFont, text)
 	im.CreatePixmap()
 	im.XDraw()
 	im.XSurfaceSet(win.Id)
@@ -403,23 +415,52 @@ func (t *tab) hideTooltip() {
 	}
 }
 
-// render generates the full expanded panel (bg color + cwd text) and
-// installs it as the window's background pixmap. Called once after
-// font assignment and whenever color or text changes.
+// tabState builds the renderer input for the current session state.
+//
+// Expanded is always true: x11 reveals and hides the panel by sliding the
+// window, not by re-rendering it.
+//
+// Glyph and Elapsed stay zero for now — the daemon does not yet publish
+// glyph/state_since (Task 7) and sessionView does not yet carry them (Task 8).
+func (t *tab) tabState() render.TabState {
+	name := displayLabel(t.sess)
+	// displayLabel falls back to DisplayCWD when there is no title, so drop
+	// the path in that case rather than printing it twice.
+	path := t.sess.DisplayCWD
+	if path == name {
+		path = ""
+	}
+	return render.TabState{
+		Activity:          t.sess.Activity,
+		Attention:         t.sess.Attention,
+		Waiting:           t.sess.Waiting,
+		Name:              name,
+		Path:              path,
+		Expanded:          true,
+		Shadow:            t.shadow,
+		BackgroundRunning: t.sess.BackgroundRunning,
+		BackgroundOutcome: t.sess.BackgroundOutcome,
+	}
+}
+
+// render generates the full expanded buffer (capsule + panel + text) and
+// installs it as the window's background pixmap. Called once after faces are
+// assigned and whenever the rendered state changes.
 func (t *tab) render() {
+	st := t.tabState()
+	if t.rendered && st == t.lastState {
+		return
+	}
+
 	if t.expandedImg != nil {
 		t.expandedImg.Destroy()
 		t.expandedImg = nil
 	}
 
-	rt := render.DrawTab(render.TabState{
-		Color:             t.opt.color,
-		Label:             displayLabel(t.sess),
-		Expanded:          true, // x11 uses positional window-slide; always render full opaque panel
-		BackgroundRunning: t.sess.BackgroundRunning,
-		BackgroundOutcome: t.sess.BackgroundOutcome,
-	}, t.font)
+	rt := render.DrawTab(st, t.faces, t.palette)
 	t.overflow = rt.Overflow
+	t.lastState = st
+	t.rendered = true
 
 	// Wrap the RGBA into an xgraphics.Image for X upload. xgraphics.Image
 	// stores pixels in BGRA order, so we must swap R and B channels rather
@@ -441,7 +482,7 @@ func (t *tab) render() {
 	im.CreatePixmap()
 	im.XDraw()
 	im.XSurfaceSet(t.win.Id)
-	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, expandedW, tabH)
+	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, bufW, bufH)
 	t.expandedImg = im
 }
 
