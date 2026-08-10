@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/nitzanz/visor/internal/hud/render"
 	"github.com/nitzanz/visor/internal/ipc"
 	"github.com/nitzanz/visor/internal/paths"
 	"github.com/nitzanz/visor/internal/state"
@@ -89,7 +90,17 @@ func ctlList(asJSON bool) {
 	fmt.Fprintln(tw, "ACTIVITY\tATTN\tAGE\tCWD\tID")
 	now := time.Now()
 	for _, s := range snaps {
-		age := now.Sub(s.LastUpdate).Truncate(time.Second)
+		// A zero LastUpdate (persisted sessions restored across a daemon
+		// restart, before the next tail/hook event refreshes it — see
+		// persist.go) must not be formatted as elapsed time: time.Since on
+		// the zero Time is ~2562047h, not zero, so naive subtraction prints
+		// a nonsense duration instead of an honest "never". This mirrors the
+		// zero-timestamp guard render.Elapsed already applies for the HUD's
+		// on-panel elapsed counter.
+		age := "never"
+		if !s.LastUpdate.IsZero() {
+			age = render.ElapsedString(render.Elapsed(s.LastUpdate, now))
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Activity, s.Attention, age, shortPath(s.CWD), shortID(s.ID))
 	}
 	tw.Flush()

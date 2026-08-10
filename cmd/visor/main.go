@@ -11,16 +11,23 @@ Usage:
   visor daemon              run the attention daemon
   visor install             write hook wrapper, print settings.json snippet
   visor hud <subcommand>    HUD control
-                              install [--backend=x11|wlr]   write backend config
-                              open    [--backend=x11|wlr]   open the HUD
-                              close   [--backend=x11|wlr]   close the HUD
-                              (backend defaults to auto-detect)
+                              install [--backend=x11|wlr] [--theme=<name>] [--shadow=<bool>]
+                              open    [--backend=x11|wlr] [--theme=<name>] [--shadow=<bool>]
+                              close   [--backend=x11|wlr] [--theme=<name>] [--shadow=<bool>]
+                              theme <tuned|silent|traffic>  persist a palette theme
+                              shadow <on|off>                persist the drop-shadow setting
+                              (backend defaults to auto-detect; --theme/--shadow each
+                              pin the whole config — theme AND shadow — disabling the
+                              live config-file reload for the life of the process)
   visor hook <event>        post a hook event to the daemon (stdin: JSON)
   visor ctl <subcommand>    query/control the daemon
                               list                  print sessions
                               jump <session-id>     focus the session's window
                               dismiss <session-id>  silence until next state change
+                              ack <session-id>      acknowledge (clear needs-attention)
                               json                  dump full state as JSON
+                              watch                 long-lived stream of snapshots
+                              classify <path.jsonl> classify a transcript, no daemon needed
 
 Env:
   VISOR_SOCK   socket path (default $XDG_RUNTIME_DIR/visor.sock)
