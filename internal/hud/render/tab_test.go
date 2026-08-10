@@ -163,6 +163,26 @@ func TestDrawTab_SquareGivesOpaqueCorners(t *testing.T) {
 	}
 }
 
+// TestDrawTab_SquareStillLeavesPadTransparent documents a KNOWN BUG, not a
+// desired behaviour: with Square set (the x11 no-compositor fallback),
+// DrawTab still leaves the ShadowPad region fully transparent rather than
+// filling it with the opaque state colour the way the pre-redesign renderer
+// did. That is harmless when uploaded through a real alpha channel, but the
+// x11 backend uploads this exact buffer at root depth when !argb — alpha gets
+// discarded there, so these zero-alpha pad pixels arrive on screen as opaque
+// premultiplied black, producing an unbroken black stripe down the dock (see
+// the comment at the Square/Shadow decision site in
+// internal/hud/x11/tab.go::tabState, and CLAUDE.md's Pending/known-WIP entry).
+// This test pins the current (buggy) output so a future change to it is
+// noticed and deliberate, not silently absorbed — it is not an endorsement of
+// the pad staying transparent under Square.
+func TestDrawTab_SquareStillLeavesPadTransparent(t *testing.T) {
+	img := DrawTab(TabState{Expanded: true, Shadow: false, Square: true}, nil, silent())
+	if got := img.RGBA.RGBAAt(0, 0); got.A != 0 {
+		t.Errorf("pad alpha under Square = %#x, want 0 (documenting the known !argb black-column bug — see comment above)", got.A)
+	}
+}
+
 // The shadow and halo shapes are unclipped on purpose — they must spread into
 // the transparent pad. What they must NOT do is reach across the capsule into
 // the panel: in the x11 orientation the panel is drawn first and the capsule's
@@ -173,7 +193,11 @@ func TestDrawTab_CapsuleShadowDoesNotDarkenPanel(t *testing.T) {
 	base := TabState{Expanded: true, TabRight: false}
 	on := DrawTab(withShadow(base, true), nil, silent())
 	off := DrawTab(withShadow(base, false), nil, silent())
-	x, y := ShadowPad+CapsuleDrawW+12, BufH/2
+	// Sample at the panel's leading edge, not deep inside it: a bleed of up
+	// to MaxProtrusion-ish pixels would still pass if this sampled further in
+	// (see the halo variant below for the worst case that motivated moving
+	// this).
+	x, y := ShadowPad+CapsuleDrawW, BufH/2
 	if got, want := on.RGBA.RGBAAt(x, y), off.RGBA.RGBAAt(x, y); got != want {
 		t.Errorf("panel pixel at x=%d with shadow = %v, without = %v; the capsule's shadow bled into the panel", x, got, want)
 	}
@@ -196,7 +220,10 @@ func TestDrawTab_CapsuleHaloDoesNotWashPanel(t *testing.T) {
 		Expanded: true, TabRight: false,
 		Activity: "waiting", Attention: "needs", Waiting: "user",
 	}
-	x, y := ShadowPad+CapsuleDrawW+12, BufH/2
+	// Panel's leading edge, not 12px inside it — the halo's worst-case reach
+	// (~x=33 against a panel edge at x=ShadowPad+CapsuleDrawW=35) would pass
+	// a deeper sample undetected.
+	x, y := ShadowPad+CapsuleDrawW, BufH/2
 	got := DrawTab(glow, nil, p).RGBA.RGBAAt(x, y)
 	want := DrawTab(plain, nil, p).RGBA.RGBAAt(x, y)
 	if got != want {

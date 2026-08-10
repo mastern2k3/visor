@@ -28,6 +28,7 @@ var helpTabSession = sessionView{
 	Activity:   "waiting",
 	Attention:  "ack",
 	DisplayCWD: "?  Help",
+	Glyph:      "?",
 }
 
 // helpRow is one line in the help screen.

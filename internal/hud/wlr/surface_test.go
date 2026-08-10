@@ -69,6 +69,35 @@ func TestComputeRightMargin_WorkingAtWobblePeak_CapsuleReachesScreenEdge(t *test
 	assertWeldedAndBounded(t, "working at wobble peak", margin)
 }
 
+// TestComputeRightMargin_NeedsAndWorkingAtWobblePeak_MarginExactlyZero covers
+// the tightest point in the whole system: a surface that is both
+// attention=needs (base already shifted in by alertProtrusion) AND working at
+// its wobble peak (round(wobbleAmp) added on top). By construction
+// (tabOverflow == render.MaxProtrusion == AlertProtrusion + round(WobbleAmp)
+// at today's values) the margin lands at exactly 0 here — the surface's right
+// edge sits exactly on the screen edge, with zero slack in either direction.
+// x11 has the equivalent case (internal/hud/x11/tab_test.go,
+// TestTickX_NeedsAndWorkingAtWobblePeak_MarginExactlyZero); wlr is the
+// backend that has never run on real hardware, so it is the one that least
+// deserves weaker coverage of the state that would first reveal a detached
+// or overshooting capsule.
+func TestComputeRightMargin_NeedsAndWorkingAtWobblePeak_MarginExactlyZero(t *testing.T) {
+	s, now := peakSurface("working", "needs")
+	margin := s.computeRightMargin(now)
+
+	// Sanity-check we actually hit the peak with attention folded in: base
+	// (-tabOverflow + alertProtrusion) plus the wobble peak delta.
+	wantDelta := int32(math.Round(wobbleAmp))
+	wantMargin := -int32(tabOverflow) + alertProtrusion + wantDelta
+	if margin != wantMargin {
+		t.Fatalf("did not land on the combined peak: margin = %d, want %d (deterministic phase setup is broken, not just the invariant)", margin, wantMargin)
+	}
+	if margin != 0 {
+		t.Errorf("margin = %d, want exactly 0 — this is the system's tightest margin; any deviation means either a gap or an overshoot", margin)
+	}
+	assertWeldedAndBounded(t, "needs+working at wobble peak", margin)
+}
+
 // The stateElapsed/elapsedChanged/haloPhaseStep decisions used to be tested
 // here, duplicated verbatim from internal/hud/x11/tab_test.go. Task 8 review
 // flagged the duplication and asked for one copy of both the logic and its
