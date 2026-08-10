@@ -28,9 +28,17 @@ type dock struct {
 	tabs map[string]*tab // session id → window
 
 	// Render inputs, loaded/resolved once at startup and shared across tabs.
+	// palette/cfg are mutated in place when a config-file change arrives (see
+	// applyConfig) — never rebuilt into a new struct — so every tab that holds
+	// a copy of d.palette gets the fresh one on its next render() call.
 	faces   *render.Faces
 	palette render.Palette
 	cfg     config.Config
+
+	// pinTheme is true when the user passed an explicit --theme flag. In that
+	// case run() does not start the config-file watcher, so a later `visor
+	// hud theme` write cannot silently override the flag.
+	pinTheme bool
 
 	// tipFont backs the two remaining xgraphics text paths (overflow tooltip,
 	// help window), which draw with freetype rather than gg.
@@ -49,7 +57,7 @@ type dock struct {
 	helpW *helpWindow
 }
 
-func newDock() (*dock, error) {
+func newDock(cfg config.Config, pinTheme bool) (*dock, error) {
 	X, err := xgbutil.NewConn()
 	if err != nil {
 		return nil, err
@@ -59,14 +67,14 @@ func newDock() (*dock, error) {
 		X.Conn().Close()
 		return nil, err
 	}
-	cfg := config.Resolve("", nil)
 	d := &dock{
-		X:       X,
-		mon:     mon,
-		log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tabs:    map[string]*tab{},
-		cfg:     cfg,
-		palette: render.Theme(cfg.Theme),
+		X:        X,
+		mon:      mon,
+		log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tabs:     map[string]*tab{},
+		cfg:      cfg,
+		palette:  render.Theme(cfg.Theme),
+		pinTheme: pinTheme,
 	}
 	if f, ferr := render.LoadFaces(); ferr != nil {
 		d.log.Warn("font load failed; tabs will render without text",
@@ -125,6 +133,19 @@ func (d *dock) run() error {
 	go subscribeLoop(ctx, snaps, d.log)
 	d.log.Info("subscribed to visor daemon")
 
+	// cfgUpdates only receives events when pinTheme is false; when the theme
+	// was pinned via --theme, no goroutine ever writes to it, so this case in
+	// the select below simply never fires and the flag-selected theme sticks
+	// for the lifetime of the process.
+	cfgUpdates := make(chan config.Config, 4)
+	if !d.pinTheme {
+		go func() {
+			if err := config.Watch(ctx, cfgUpdates, d.log); err != nil && ctx.Err() == nil {
+				d.log.Warn("config watch exited", "err", err)
+			}
+		}()
+	}
+
 	pingBefore, pingAfter, pingQuit := xevent.MainPing(d.X)
 
 	sig := make(chan os.Signal, 1)
@@ -144,6 +165,8 @@ func (d *dock) run() error {
 			return nil
 		case snap := <-snaps:
 			d.applySnapshot(snap)
+		case newCfg := <-cfgUpdates:
+			d.applyConfig(newCfg)
 		case now := <-anim.C:
 			d.animate(now)
 		case <-sig:
@@ -172,6 +195,38 @@ func (d *dock) animate(now time.Time) {
 		d.helpT.tickElapsed(now)
 		d.helpT.tickHalo(now)
 	}
+}
+
+// applyConfig stores a newly-loaded config from the file watcher and
+// re-renders every tab (including the synthetic help tab) in place with the
+// new palette/shadow. Windows are reused, not recreated — recreating them
+// would flash the dock and drop hover/expanded state — so this only ever
+// calls render() on existing tabs.
+//
+// render() normally skips repainting when the computed render.TabState is
+// unchanged from last time, and TabState carries no palette field (palette
+// is a render *input*, not part of the observable state), so t.rendered is
+// forced back to false here to bypass that memoization for exactly this one
+// call.
+func (d *dock) applyConfig(cfg config.Config) {
+	d.cfg = cfg
+	d.palette = render.Theme(cfg.Theme)
+	d.log.Info("config changed; re-rendering tabs", "theme", cfg.Theme, "shadow", cfg.Shadow)
+
+	now := time.Now()
+	for _, t := range d.tabs {
+		t.palette = d.palette
+		t.shadow = cfg.Shadow
+		t.rendered = false
+		t.render(now)
+	}
+	if d.helpT != nil {
+		d.helpT.palette = d.palette
+		d.helpT.shadow = cfg.Shadow
+		d.helpT.rendered = false
+		d.helpT.render(now)
+	}
+	d.X.Sync()
 }
 
 // makeHelpTab creates the synthetic help tab at slot 0 and wires its

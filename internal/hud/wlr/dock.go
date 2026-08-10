@@ -43,10 +43,18 @@ type dock struct {
 	hasCompositor, hasShm, hasSeat, hasOutput, hasLayerShell bool
 
 	// Render inputs used by layerSurface.repaint. faces is nil if font load
-	// failed, in which case tabs render without any text.
+	// failed, in which case tabs render without any text. palette/cfg are
+	// mutated in place (never rebuilt) when a config-file change arrives —
+	// see applyConfig — so every surface picks up the fresh values on its
+	// next repaint.
 	faces   *render.Faces
 	palette render.Palette
 	cfg     config.Config
+
+	// pinTheme is true when the user passed an explicit --theme flag. In
+	// that case run() does not start the config-file watcher, so a later
+	// `visor hud theme` write cannot silently override the flag.
+	pinTheme bool
 
 	// surfaces is keyed by session id. layerSurface values can be compared with
 	// == in findSurface because wl.Surface embeds a pointer to per-object data,
@@ -58,12 +66,12 @@ type dock struct {
 	pointer *pointer
 }
 
-func newDock() (*dock, error) {
-	cfg := config.Resolve("", nil)
+func newDock(cfg config.Config, pinTheme bool) (*dock, error) {
 	d := &dock{
-		log:     slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		cfg:     cfg,
-		palette: render.Theme(cfg.Theme),
+		log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		cfg:      cfg,
+		palette:  render.Theme(cfg.Theme),
+		pinTheme: pinTheme,
 	}
 
 	// Connect to the Wayland display. NewDisplay("") falls back to
@@ -244,6 +252,19 @@ func (d *dock) run(ctx context.Context) error {
 	snaps := make(chan []sessionView, 4)
 	go subscribeLoop(ctx, snaps, d.log)
 
+	// cfgUpdates only receives events when pinTheme is false; when the theme
+	// was pinned via --theme, no goroutine ever writes to it, so the select
+	// cases below simply never fire and the flag-selected theme sticks for
+	// the lifetime of the process.
+	cfgUpdates := make(chan config.Config, 4)
+	if !d.pinTheme {
+		go func() {
+			if err := config.Watch(ctx, cfgUpdates, d.log); err != nil && ctx.Err() == nil {
+				d.log.Warn("config watch exited", "err", err)
+			}
+		}()
+	}
+
 	// Goroutine that closes the display when ctx is cancelled, which causes
 	// an in-progress Dispatch() to return with an error that we treat as clean
 	// shutdown.
@@ -253,12 +274,16 @@ func (d *dock) run(ctx context.Context) error {
 	}()
 
 	for {
-		// Drain pending snapshots without blocking.
+		// Drain pending snapshots and config updates without blocking.
 		drained := false
 		for {
 			select {
 			case snap := <-snaps:
 				d.applySnapshot(snap)
+				drained = true
+				continue
+			case newCfg := <-cfgUpdates:
+				d.applyConfig(newCfg)
 				drained = true
 				continue
 			default:
@@ -273,6 +298,8 @@ func (d *dock) run(ctx context.Context) error {
 			select {
 			case snap := <-snaps:
 				d.applySnapshot(snap)
+			case newCfg := <-cfgUpdates:
+				d.applyConfig(newCfg)
 			case <-time.After(idlePollInterval):
 			case <-ctx.Done():
 				return nil
@@ -313,6 +340,25 @@ func (d *dock) run(ctx context.Context) error {
 			}
 			return fmt.Errorf("dispatch: %w", err)
 		}
+	}
+}
+
+// applyConfig stores a newly-loaded config from the file watcher and
+// repaints every surface in place with the new palette/shadow. Surfaces are
+// not destroyed and recreated — that would flash the dock and lose hover
+// state — so this only ever calls repaint() on existing surfaces, which
+// itself falls back to the surface's own dirty-retry-on-release path (see
+// layerSurface.repaint / pool.onRelease) if both shm buffers are currently
+// in-flight with the compositor.
+//
+// Must be called from the run() goroutine, same as applySnapshot.
+func (d *dock) applyConfig(cfg config.Config) {
+	d.cfg = cfg
+	d.palette = render.Theme(cfg.Theme)
+	d.log.Info("config changed; repainting surfaces", "theme", cfg.Theme, "shadow", cfg.Shadow)
+	for _, s := range d.surfaces {
+		s.state.Shadow = cfg.Shadow
+		s.repaint(d)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/nitzanz/visor/internal/hud"
+	"github.com/nitzanz/visor/internal/hud/config"
 )
 
 var _ hud.Backend = (*Backend)(nil)
@@ -23,9 +24,18 @@ var _ hud.Backend = (*Backend)(nil)
 // Backend implements hud.Backend by running an in-process Wayland client
 // that subscribes to the visor daemon and manages one layer surface per
 // session.
-type Backend struct{}
+type Backend struct {
+	cfg      config.Config
+	pinTheme bool
+}
 
-func New() *Backend { return &Backend{} }
+// New constructs the wlr backend with an already-resolved config. pinTheme
+// is true when the caller passed an explicit --theme flag: in that case the
+// dock does not start the config-file watcher, so the flag-selected theme
+// cannot be silently overridden by a later `visor hud theme` write.
+func New(cfg config.Config, pinTheme bool) *Backend {
+	return &Backend{cfg: cfg, pinTheme: pinTheme}
+}
 
 func (b *Backend) Name() string { return "wlr" }
 
@@ -37,7 +47,7 @@ func (b *Backend) Open() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	d, err := newDock()
+	d, err := newDock(b.cfg, b.pinTheme)
 	if err != nil {
 		return fmt.Errorf("connect wayland: %w", err)
 	}
