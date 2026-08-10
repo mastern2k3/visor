@@ -1,6 +1,7 @@
 package render
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -325,4 +326,42 @@ func TestDrawTab_ElapsedRendersWithoutPanic(t *testing.T) {
 		Activity: "waiting", Attention: "needs", Waiting: "user",
 		Elapsed: 4*time.Minute + 12*time.Second,
 	}, f, silent())
+}
+
+// TestMaxProtrusion_CoversActualWobblePeak pins the invariant that broke the
+// welded-edge illusion once already: the animation code
+// (internal/hud/x11/tab.go, internal/hud/wlr/surface.go) shifts a working
+// tab by math.Round(WobbleAmp*t01) at its peak, so MaxProtrusion — the
+// overhang CapsuleDrawW reserves off-screen — must be at least
+// AlertProtrusion + that rounded peak shift. If MaxProtrusion is ever
+// derived by truncating WobbleAmp (int(WobbleAmp)) instead of taking its
+// ceiling, this fails for any non-integer WobbleAmp: e.g. WobbleAmp=4.5
+// truncates to 4 but the animation can shift by round(4.5)=5, so the
+// capsule's drawn right edge would fall 1px short of the screen edge at the
+// wobble peak — the capsule visibly detaches from the edge, the exact
+// regression that has already cost two fix rounds.
+func TestMaxProtrusion_CoversActualWobblePeak(t *testing.T) {
+	actualPeakShift := AlertProtrusion + int(math.Round(WobbleAmp))
+	if MaxProtrusion < actualPeakShift {
+		t.Fatalf("MaxProtrusion = %d, want >= %d (AlertProtrusion + round(WobbleAmp)) — "+
+			"the off-screen overhang under-provisions the actual animation peak, so the "+
+			"capsule detaches from the screen edge at the wobble peak",
+			MaxProtrusion, actualPeakShift)
+	}
+}
+
+// TestMaxProtrusion_UnchangedAtTodaysValues locks MaxProtrusion at 12 (and
+// CapsuleDrawW at 30) for today's AlertProtrusion=8, WobbleAmp=4.0 — the
+// values the rest of the rendering code and both backends were built and
+// visually verified against. This is not a behavior the derivation should
+// ever need to change on its own; a value change here means either the
+// geometry constants moved (fine, update this test) or the ceiling
+// derivation regressed (not fine).
+func TestMaxProtrusion_UnchangedAtTodaysValues(t *testing.T) {
+	if MaxProtrusion != 12 {
+		t.Errorf("MaxProtrusion = %d, want 12", MaxProtrusion)
+	}
+	if CapsuleDrawW != CapsuleW+12 {
+		t.Errorf("CapsuleDrawW = %d, want CapsuleW+12 = %d", CapsuleDrawW, CapsuleW+12)
+	}
 }
