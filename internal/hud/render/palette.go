@@ -17,6 +17,13 @@ type StateColors struct {
 // five state hues. A theme that only re-tinted the capsules would leave the
 // panel and work-bar hardcoded, and `silent` in particular only reads correctly
 // because its panel and work-bar are tuned with it.
+//
+// Every colour field here is a packed 0xRRGGBB uint32 with no room for an
+// alpha channel — rgbaOf hardcodes A: 0xff when converting one to a
+// color.RGBA. Any "@ N%" transparency in the design spec's palette table was
+// pre-composited into these opaque hex values by eye; do not decode a
+// percentage back out of one of these constants, and do not widen a token to
+// 0xAARRGGBB expecting it to be respected — nothing here reads the extra byte.
 type Palette struct {
 	Name string
 

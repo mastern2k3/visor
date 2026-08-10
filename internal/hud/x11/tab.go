@@ -539,6 +539,20 @@ func (t *tab) tabState(now time.Time) render.TabState {
 		// the capsule is opaque black, so a shadow drawn into it is a black box
 		// and an antialiased corner is a black notch — square and shadowless is
 		// the only honest rendering.
+		//
+		// KNOWN LIMITATION (not fixed by this render decision, only bounded):
+		// DrawTab still leaves the ShadowPad region *transparent* even when
+		// Square is set. That transparency is harmless when argb is true
+		// (composited normally), but when argb is false the buffer is uploaded
+		// at root depth, alpha is discarded outright, and whatever premultiplied
+		// (black, because transparent) pixels are in the pad land on screen as
+		// opaque black. Because RowPitch == BufH, every tab's pad abuts its
+		// neighbour's, so the whole dock gets an unbroken black stripe down its
+		// left edge — a regression versus the pre-redesign renderer, which
+		// filled the entire buffer with the opaque state colour and had no
+		// transparent region to begin with. See CLAUDE.md's Pending/known-WIP
+		// entry for the fix this is deferring. Square/Shadow above only handles
+		// the capsule's own corners/shadow, not this pad.
 		Shadow:            t.shadow && t.opt.argb,
 		Square:            !t.opt.argb,
 		BackgroundRunning: t.sess.BackgroundRunning,

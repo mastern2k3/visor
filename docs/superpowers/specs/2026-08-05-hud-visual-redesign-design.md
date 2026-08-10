@@ -238,15 +238,32 @@ black @ 28%. `traffic` overrides `WorkRunning` to `#0d3b33` for contrast against
 its light working capsule. `GlyphLumThreshold` 140, `GlyphDark` `#10141c`,
 `GlyphLight` `#e5e9f0` — the last two matching today's `contrastFG` returns.
 
+The `@ N%` figures above describe the *look* that was approved by eye, not the
+shipped representation. `StateColors` and `Palette` tokens are `uint32` packed
+RGB (`0xRRGGBB`), and `rgbaOf` hardcodes `A: 0xff` when converting one to a
+`color.RGBA` — there is nowhere in this type for an alpha channel to live. The
+percentages were pre-composited into the opaque hex values actually in
+`palette.go` (e.g. `PanelBorder` white @ 10% over the panel's dark background
+became a solid, darker hex, not `0xffffff` with 10% alpha) before this table
+was written down. The rendered result matches; a future session should not
+"restore" these percentages literally as `0xf5......`-style ARGB constants —
+that would double-apply the transparency and produce garbage. If true alpha
+support is ever needed, it requires widening `StateColors`/`Palette` beyond
+`uint32`, not decoding a percentage back out of one.
+
 ## Rendering stack
 
 - **Shapes:** `github.com/fogleman/gg` — rounded rects, linear gradients,
   clipping, stroke/fill, antialiased. Pure Go, no cgo, single static binary
   intact.
 - **Text:** `golang.org/x/image/font/opentype` + `sfnt`, fed to gg via
-  `SetFontFace`. **Drops the direct `BurntSushi/freetype-go` dependency.**
-  `BurntSushi/graphics-go` remains as an indirect dep — `xgbutil/xgraphics`
-  needs it. Font discovery in `render/font.go` keeps its existing candidate list.
+  `SetFontFace`. **Drops `BurntSushi/freetype-go` from `internal/hud/render`,
+  but not from the binary overall**: the x11 backend's tooltip and help
+  windows (`internal/hud/x11/tab.go`, `internal/hud/x11/help.go`) still draw
+  through `xgraphics.Image.Text`, which is built on `freetype-go`, so it
+  remains a direct dependency of the module as a whole. `BurntSushi/graphics-go`
+  also remains as an indirect dep — `xgbutil/xgraphics` needs it. Font discovery
+  in `render/font.go` keeps its existing candidate list.
 - **Shadow:** pure-Go blur over the tab buffer. At 305x54 the cost is
   microseconds and the 30 Hz loop will not notice. The probe used three box-blur
   passes; the implementation should use a proper stack blur.
