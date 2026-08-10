@@ -126,9 +126,9 @@ func register(p Palette) {
 }
 
 func init() {
-	// tuned — today's hue family, ordering fixed. Red becomes the brightest
-	// and most saturated element; amber drops below it; cyan is dimmed so
-	// "busy, needs nothing" stops shouting.
+	// tuned (default) — today's hue family, ordering fixed. Red becomes the
+	// brightest and most saturated element; amber drops below it; cyan is
+	// dimmed so "busy, needs nothing" stops shouting.
 	register(Palette{
 		Name:       "tuned",
 		Permission: StateColors{Top: 0xff8a7d, Base: 0xff5a4f, Bot: 0xe04338, Halo: 0xff5a4f, Glow: true},
@@ -138,8 +138,8 @@ func init() {
 		Dismissed:  StateColors{Top: 0x333949, Base: 0x2c3140, Bot: 0x242936},
 	})
 
-	// silent (default) — colour spent only on "a human is needed". Working,
-	// ack and dismissed are neutrals separated by luminance alone; activity is
+	// silent — colour spent only on "a human is needed". Working, ack and
+	// dismissed are neutrals separated by luminance alone; activity is
 	// carried by the wobble and the work-bar, not hue.
 	register(Palette{
 		Name:       "silent",
@@ -164,7 +164,14 @@ func init() {
 }
 
 // DefaultTheme is used when config is absent or names an unknown theme.
-const DefaultTheme = "silent"
+//
+// It was "silent" until the mockup review; the real dock disagreed. Silent's
+// working (#3d4653) and ack (#343a45) states differ by ~11 Rec.601 luminance —
+// indistinguishable at a glance on a real screen, even though that same pair
+// read fine through the blurred peripheral-vision mockup panel used to judge
+// it. "tuned" is now the default; silent and traffic still ship as opt-in
+// themes with unchanged hex values.
+const DefaultTheme = "tuned"
 
 // Themes returns the registered theme names in sorted order.
 func Themes() []string {

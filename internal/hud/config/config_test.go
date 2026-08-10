@@ -20,15 +20,15 @@ func TestParse_KeysAndComments(t *testing.T) {
 
 func TestParse_DefaultsWhenEmpty(t *testing.T) {
 	got := Parse(strings.NewReader(""))
-	if got.Theme != "silent" || !got.Shadow {
-		t.Errorf("Parse(empty) = %+v, want {silent true}", got)
+	if got.Theme != "tuned" || !got.Shadow {
+		t.Errorf("Parse(empty) = %+v, want {tuned true}", got)
 	}
 }
 
 func TestParse_UnknownThemeFallsBack(t *testing.T) {
 	got := Parse(strings.NewReader("theme = nonsense\n"))
-	if got.Theme != "silent" {
-		t.Errorf("Theme = %q, want \"silent\" for unknown theme", got.Theme)
+	if got.Theme != "tuned" {
+		t.Errorf("Theme = %q, want \"tuned\" for unknown theme", got.Theme)
 	}
 }
 
@@ -43,28 +43,38 @@ func TestParse_IgnoresJunkLines(t *testing.T) {
 }
 
 func TestResolve_Precedence(t *testing.T) {
+	// Every tier's expected theme below must differ both from the default
+	// ("tuned") and from the tier immediately beneath it — otherwise the
+	// assertion would pass even if that tier's loading were completely
+	// broken and it fell through to the default (or the tier below) by
+	// accident. That's exactly what happened when this fixture used to write
+	// "theme = tuned" into the file: once "tuned" became the default, a
+	// no-op file load and a correctly-honoured file load produced the same
+	// result, so the assertion no longer proved the file was read at all.
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	if err := os.MkdirAll(filepath.Join(dir, "visor"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(Path(), []byte("theme = tuned\nshadow = false\n"), 0o644); err != nil {
+	if err := os.WriteFile(Path(), []byte("theme = silent\nshadow = false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// File only.
-	if got := Resolve("", nil); got.Theme != "tuned" || got.Shadow {
-		t.Errorf("file-only Resolve = %+v, want {tuned false}", got)
+	// File only. "silent" differs from the default "tuned".
+	if got := Resolve("", nil); got.Theme != "silent" || got.Shadow {
+		t.Errorf("file-only Resolve = %+v, want {silent false}", got)
 	}
 
-	// Env beats file.
+	// Env beats file. "traffic" differs from both the default "tuned" and
+	// the file tier's "silent".
 	t.Setenv("VISOR_THEME", "traffic")
 	t.Setenv("VISOR_SHADOW", "true")
 	if got := Resolve("", nil); got.Theme != "traffic" || !got.Shadow {
 		t.Errorf("env Resolve = %+v, want {traffic true}", got)
 	}
 
-	// Flag beats env.
+	// Flag beats env. "silent" differs from both the default "tuned" and
+	// the env tier's "traffic".
 	no := false
 	if got := Resolve("silent", &no); got.Theme != "silent" || got.Shadow {
 		t.Errorf("flag Resolve = %+v, want {silent false}", got)
@@ -86,8 +96,8 @@ func TestSaveThenLoad_RoundTrips(t *testing.T) {
 func TestLoad_MissingFileYieldsDefaults(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	got := Load()
-	if got.Theme != "silent" || !got.Shadow {
-		t.Errorf("Load(missing) = %+v, want {silent true}", got)
+	if got.Theme != "tuned" || !got.Shadow {
+		t.Errorf("Load(missing) = %+v, want {tuned true}", got)
 	}
 }
 

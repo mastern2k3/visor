@@ -64,7 +64,14 @@ Pure data + lookup. No rendering yet. `render.ColorFor` is deliberately left in 
   - `type Palette struct { ... }` (fields listed in Step 3)
   - `func Themes() []string` — sorted registered theme names.
   - `func ThemeByName(name string) (Palette, bool)`
-  - `func Theme(name string) Palette` — falls back to `silent` for unknown names.
+  - `func Theme(name string) Palette` — falls back to `tuned` for unknown names.
+    (Note: this plan and its Step-1 test snippets below were written when
+    `silent` was still the default. A follow-up changed the default to
+    `tuned` — see `render.DefaultTheme`'s doc comment — because the mockup
+    review judged `silent`'s working/ack contrast through a blurred
+    peripheral-vision panel, which flatters it; the real dock disagreed. The
+    code blocks below are left as the historical record of what Step 1
+    actually shipped and are no longer literally accurate.)
   - `func (p Palette) For(activity, attention, waiting string) StateColors`
   - `func (p Palette) GlyphFG(base uint32) uint32`
 
@@ -425,7 +432,11 @@ git commit -m "feat(render): add Palette token set with tuned/silent/traffic the
   - `func Save(c Config) error`
   - `func Parse(r io.Reader) Config`
 
-Precedence per key: flag → env (`VISOR_THEME`, `VISOR_SHADOW`) → file → default (`silent`, `true`).
+Precedence per key: flag → env (`VISOR_THEME`, `VISOR_SHADOW`) → file → default
+(`tuned`, `true`) — the default theme changed from `silent` to `tuned` in a
+follow-up after the real dock showed `silent`'s working/ack states as the same
+dark grey; the code blocks below still show `silent` as the historical record
+of what this step originally shipped.
 
 - [ ] **Step 1: Write the failing tests**
 

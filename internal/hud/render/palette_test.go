@@ -43,12 +43,12 @@ func TestThemes_AllRegistered(t *testing.T) {
 	}
 }
 
-func TestTheme_UnknownFallsBackToSilent(t *testing.T) {
+func TestTheme_UnknownFallsBackToDefault(t *testing.T) {
 	if _, ok := ThemeByName("nope"); ok {
 		t.Errorf("ThemeByName(\"nope\") reported ok; want false")
 	}
-	if Theme("nope").Name != "silent" {
-		t.Errorf("Theme(\"nope\").Name = %q, want \"silent\"", Theme("nope").Name)
+	if Theme("nope").Name != DefaultTheme {
+		t.Errorf("Theme(\"nope\").Name = %q, want %q", Theme("nope").Name, DefaultTheme)
 	}
 }
 

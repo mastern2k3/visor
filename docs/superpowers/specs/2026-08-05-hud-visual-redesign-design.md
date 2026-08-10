@@ -185,9 +185,18 @@ works if the panel and work-bar are re-tuned with it.
 
 Registry keyed by name. Values below are the approved mockup values.
 
-**`tuned`** — same hue family as today, ordering fixed. Red becomes the
+**`tuned`** (default) — same hue family as today, ordering fixed. Red becomes the
 brightest, most saturated element and gains a halo; amber drops below it; cyan is
 dimmed and desaturated so "busy, needs nothing" stops shouting.
+
+> **Default changed post-mockup-review.** This spec originally called
+> `silent` the default. It was changed to `tuned` after the real dock was
+> tested: `silent`'s working (`#3d4653`) and ack (`#343a45`) states differ by
+> only ~11 Rec.601 luminance and read as the same dark grey on a real screen.
+> The mockup review judged `silent` through a blurred peripheral-vision
+> panel, which flatters exactly this kind of low-contrast pair; the real
+> dock disagreed. The palette tables and hex values below are unchanged —
+> only which theme ships as the default.
 
 | state | top | base | bot |
 | --- | --- | --- | --- |
@@ -197,7 +206,7 @@ dimmed and desaturated so "busy, needs nothing" stops shouting.
 | ack | `#5b6472` | `#4a5260` | `#3c4351` |
 | dismissed | `#333949` | `#2c3140` | `#242936` |
 
-**`silent`** (default) — colour spent only on "a human is needed". Working, ack
+**`silent`** — colour spent only on "a human is needed". Working, ack
 and dismissed are neutrals separated by luminance alone; activity is carried by
 the wobble and the work-bar, not hue.
 
@@ -299,12 +308,12 @@ elapsed counter and the permission halo pulse.
 `key = value`, one per line, `#` comments. Two keys:
 
 ```
-theme = silent
+theme = tuned
 shadow = true
 ```
 
 Precedence per key: command-line flag (`--theme`, `--shadow`) → environment
-(`VISOR_THEME`, `VISOR_SHADOW`) → config file → default (`silent`, `true`). A
+(`VISOR_THEME`, `VISOR_SHADOW`) → config file → default (`tuned`, `true`). A
 flag pins its key and suppresses live reload for it.
 
 `visor hud theme <name>` and `visor hud shadow on|off` rewrite the file,
@@ -312,7 +321,7 @@ preserving the other key. The HUD watches the file with fsnotify — already a
 dependency — and re-renders every tab in place. No new IPC verb, and no
 presentation state in the daemon's store.
 
-An unknown theme name falls back to `silent` with a logged warning rather than
+An unknown theme name falls back to `tuned` with a logged warning rather than
 failing to start.
 
 ## State and data additions
