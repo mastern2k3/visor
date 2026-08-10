@@ -49,7 +49,7 @@ func (o *optionalBool) IsBoolFlag() bool { return true }
 // theme name. An empty name (flag not passed) is not an error here — that
 // case is handled by config.Resolve falling through to env/file/default.
 //
-// This must run *before* config.Resolve/pinTheme are computed for the
+// This must run *before* config.Resolve/pinConfig are computed for the
 // --theme flag: config.Resolve's underlying setTheme silently discards an
 // unknown theme and keeps whatever the file/env/default already had, so
 // without this check `visor hud open --theme=bogus` would print nothing,
@@ -71,19 +71,19 @@ func rejectUnknownTheme(cmdName, name string) {
 // pickBackend resolves a backend name to an implementation. An empty name
 // auto-detects: a Wayland session (WAYLAND_DISPLAY set) gets the wlr
 // backend, everything else gets x11 (which also covers GNOME via XWayland,
-// since GNOME has no layer-shell). cfg and pinTheme are threaded through to
+// since GNOME has no layer-shell). cfg and pinConfig are threaded through to
 // whichever in-process backend gets picked.
-func pickBackend(name string, cfg config.Config, pinTheme bool) (hud.Backend, error) {
+func pickBackend(name string, cfg config.Config, pinConfig bool) (hud.Backend, error) {
 	switch name {
 	case "":
 		if os.Getenv("WAYLAND_DISPLAY") != "" {
-			return wlr.New(cfg, pinTheme), nil
+			return wlr.New(cfg, pinConfig), nil
 		}
-		return x11.New(cfg, pinTheme), nil
+		return x11.New(cfg, pinConfig), nil
 	case "x11":
-		return x11.New(cfg, pinTheme), nil
+		return x11.New(cfg, pinConfig), nil
 	case "wlr":
-		return wlr.New(cfg, pinTheme), nil
+		return wlr.New(cfg, pinConfig), nil
 	case "eww":
 		return nil, errors.New("the eww backend was removed; use --backend=x11 or --backend=wlr instead")
 	default:
@@ -101,14 +101,21 @@ func runHUD(args []string) {
 	backendName := fs.String("backend", "", "HUD backend (x11|wlr; default: auto-detect)")
 	themeFlag := fs.String("theme", "", "palette theme (tuned|silent|traffic); pins the whole config (theme AND shadow), disabling live reload for both")
 	var shadowFlag optionalBool
-	fs.Var(&shadowFlag, "shadow", "draw the HUD's own drop shadow (true|false)")
+	fs.Var(&shadowFlag, "shadow", "draw the HUD's own drop shadow (true|false); pins the whole config (theme AND shadow), disabling live reload for both")
 	_ = fs.Parse(args[1:])
 
 	switch sub {
 	case "install", "open", "close":
 		rejectUnknownTheme("hud "+sub, *themeFlag)
 		cfg := config.Resolve(*themeFlag, shadowFlag.val)
-		b, err := pickBackend(*backendName, cfg, *themeFlag != "")
+		// pin is true whenever either flag was explicitly passed. Either one
+		// pins the *whole* config (theme and shadow together) and disables the
+		// fsnotify watcher for the process's lifetime — see the flag help text
+		// above. A half-pin (theme pinned, shadow still live or vice versa)
+		// would let `visor hud shadow on` mutate the file out from under a
+		// user who explicitly asked for one flag's value to stick.
+		pin := *themeFlag != "" || shadowFlag.val != nil
+		b, err := pickBackend(*backendName, cfg, pin)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "hud:", err)
 			os.Exit(2)

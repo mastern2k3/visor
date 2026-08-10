@@ -31,16 +31,17 @@ var _ hud.Backend = (*Backend)(nil)
 // Backend implements hud.Backend by spawning an X11 dock process that
 // subscribes to the visor daemon and manages one window per session.
 type Backend struct {
-	cfg      config.Config
-	pinTheme bool
+	cfg       config.Config
+	pinConfig bool
 }
 
-// New constructs the x11 backend with an already-resolved config. pinTheme
-// is true when the caller passed an explicit --theme flag: in that case the
-// dock does not start the config-file watcher, so the flag-selected theme
-// cannot be silently overridden by a later `visor hud theme` write.
-func New(cfg config.Config, pinTheme bool) *Backend {
-	return &Backend{cfg: cfg, pinTheme: pinTheme}
+// New constructs the x11 backend with an already-resolved config. pinConfig
+// is true when the caller passed an explicit --theme or --shadow flag: in
+// that case the dock does not start the config-file watcher, so the
+// flag-selected values cannot be silently overridden by a later `visor hud
+// theme`/`visor hud shadow` write.
+func New(cfg config.Config, pinConfig bool) *Backend {
+	return &Backend{cfg: cfg, pinConfig: pinConfig}
 }
 
 func (b *Backend) Name() string { return "x11" }
@@ -70,7 +71,7 @@ needed, and only if your compositor shadows dock windows at all.
 }
 
 func (b *Backend) Open() error {
-	d, err := newDock(b.cfg, b.pinTheme)
+	d, err := newDock(b.cfg, b.pinConfig)
 	if err != nil {
 		return fmt.Errorf("connect X: %w", err)
 	}

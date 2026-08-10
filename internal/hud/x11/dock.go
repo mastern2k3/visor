@@ -35,10 +35,11 @@ type dock struct {
 	palette render.Palette
 	cfg     config.Config
 
-	// pinTheme is true when the user passed an explicit --theme flag. In that
-	// case run() does not start the config-file watcher, so a later `visor
-	// hud theme` write cannot silently override the flag.
-	pinTheme bool
+	// pinConfig is true when the user passed an explicit --theme or --shadow
+	// flag. In that case run() does not start the config-file watcher, so a
+	// later `visor hud theme`/`visor hud shadow` write cannot silently
+	// override the flag.
+	pinConfig bool
 
 	// tipFont backs the two remaining xgraphics text paths (overflow tooltip,
 	// help window), which draw with freetype rather than gg.
@@ -57,7 +58,7 @@ type dock struct {
 	helpW *helpWindow
 }
 
-func newDock(cfg config.Config, pinTheme bool) (*dock, error) {
+func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
 	X, err := xgbutil.NewConn()
 	if err != nil {
 		return nil, err
@@ -68,14 +69,23 @@ func newDock(cfg config.Config, pinTheme bool) (*dock, error) {
 		return nil, err
 	}
 	d := &dock{
-		X:        X,
-		mon:      mon,
-		log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		tabs:     map[string]*tab{},
-		cfg:      cfg,
-		palette:  render.Theme(cfg.Theme),
-		pinTheme: pinTheme,
+		X:         X,
+		mon:       mon,
+		log:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		tabs:      map[string]*tab{},
+		cfg:       cfg,
+		palette:   render.Theme(cfg.Theme),
+		pinConfig: pinConfig,
 	}
+	// internal/hud/config has no logger of its own (Load/Parse must never
+	// fail, and the very first config.Resolve call in cmd/visor/hud.go runs
+	// before any dock exists), so it warns about a bad "theme = " line in
+	// hud.conf via slog's package-level default logger instead. That very
+	// first Resolve call still goes through slog's plain (but non-silent —
+	// stderr by default) handler; pointing the default at the dock's own
+	// structured logger here just makes every *subsequent* config.Watch
+	// reload warning come out formatted like the rest of this backend's logs.
+	slog.SetDefault(d.log)
 	if f, ferr := render.LoadFaces(); ferr != nil {
 		d.log.Warn("font load failed; tabs will render without text",
 			"err", ferr, "tried", render.FontCandidates())
@@ -133,12 +143,12 @@ func (d *dock) run() error {
 	go subscribeLoop(ctx, snaps, d.log)
 	d.log.Info("subscribed to visor daemon")
 
-	// cfgUpdates only receives events when pinTheme is false; when the theme
-	// was pinned via --theme, no goroutine ever writes to it, so this case in
+	// cfgUpdates only receives events when pinConfig is false; when the config
+	// was pinned via --theme/--shadow, no goroutine ever writes to it, so this case in
 	// the select below simply never fires and the flag-selected theme sticks
 	// for the lifetime of the process.
 	cfgUpdates := make(chan config.Config, 4)
-	if !d.pinTheme {
+	if !d.pinConfig {
 		go func() {
 			if err := config.Watch(ctx, cfgUpdates, d.log); err != nil && ctx.Err() == nil {
 				d.log.Warn("config watch exited", "err", err)

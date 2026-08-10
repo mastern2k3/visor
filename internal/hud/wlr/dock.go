@@ -51,10 +51,11 @@ type dock struct {
 	palette render.Palette
 	cfg     config.Config
 
-	// pinTheme is true when the user passed an explicit --theme flag. In
-	// that case run() does not start the config-file watcher, so a later
-	// `visor hud theme` write cannot silently override the flag.
-	pinTheme bool
+	// pinConfig is true when the user passed an explicit --theme or --shadow
+	// flag. In that case run() does not start the config-file watcher, so a
+	// later `visor hud theme`/`visor hud shadow` write cannot silently
+	// override the flag.
+	pinConfig bool
 
 	// surfaces is keyed by session id. layerSurface values can be compared with
 	// == in findSurface because wl.Surface embeds a pointer to per-object data,
@@ -66,13 +67,22 @@ type dock struct {
 	pointer *pointer
 }
 
-func newDock(cfg config.Config, pinTheme bool) (*dock, error) {
+func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
 	d := &dock{
-		log:      slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
-		cfg:      cfg,
-		palette:  render.Theme(cfg.Theme),
-		pinTheme: pinTheme,
+		log:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		cfg:       cfg,
+		palette:   render.Theme(cfg.Theme),
+		pinConfig: pinConfig,
 	}
+	// internal/hud/config has no logger of its own (Load/Parse must never
+	// fail, and the very first config.Resolve call in cmd/visor/hud.go runs
+	// before any dock exists), so it warns about a bad "theme = " line in
+	// hud.conf via slog's package-level default logger instead. That very
+	// first Resolve call still goes through slog's plain (but non-silent —
+	// stderr by default) handler; pointing the default at the dock's own
+	// structured logger here just makes every *subsequent* config.Watch
+	// reload warning come out formatted like the rest of this backend's logs.
+	slog.SetDefault(d.log)
 
 	// Connect to the Wayland display. NewDisplay("") falls back to
 	// WAYLAND_DISPLAY then "wayland-0".
@@ -252,12 +262,12 @@ func (d *dock) run(ctx context.Context) error {
 	snaps := make(chan []sessionView, 4)
 	go subscribeLoop(ctx, snaps, d.log)
 
-	// cfgUpdates only receives events when pinTheme is false; when the theme
-	// was pinned via --theme, no goroutine ever writes to it, so the select
+	// cfgUpdates only receives events when pinConfig is false; when the config
+	// was pinned via --theme/--shadow, no goroutine ever writes to it, so the select
 	// cases below simply never fire and the flag-selected theme sticks for
 	// the lifetime of the process.
 	cfgUpdates := make(chan config.Config, 4)
-	if !d.pinTheme {
+	if !d.pinConfig {
 		go func() {
 			if err := config.Watch(ctx, cfgUpdates, d.log); err != nil && ctx.Err() == nil {
 				d.log.Warn("config watch exited", "err", err)

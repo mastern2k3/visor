@@ -25,16 +25,17 @@ var _ hud.Backend = (*Backend)(nil)
 // that subscribes to the visor daemon and manages one layer surface per
 // session.
 type Backend struct {
-	cfg      config.Config
-	pinTheme bool
+	cfg       config.Config
+	pinConfig bool
 }
 
-// New constructs the wlr backend with an already-resolved config. pinTheme
-// is true when the caller passed an explicit --theme flag: in that case the
-// dock does not start the config-file watcher, so the flag-selected theme
-// cannot be silently overridden by a later `visor hud theme` write.
-func New(cfg config.Config, pinTheme bool) *Backend {
-	return &Backend{cfg: cfg, pinTheme: pinTheme}
+// New constructs the wlr backend with an already-resolved config. pinConfig
+// is true when the caller passed an explicit --theme or --shadow flag: in
+// that case the dock does not start the config-file watcher, so the
+// flag-selected values cannot be silently overridden by a later `visor hud
+// theme`/`visor hud shadow` write.
+func New(cfg config.Config, pinConfig bool) *Backend {
+	return &Backend{cfg: cfg, pinConfig: pinConfig}
 }
 
 func (b *Backend) Name() string { return "wlr" }
@@ -47,7 +48,7 @@ func (b *Backend) Open() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	d, err := newDock(b.cfg, b.pinTheme)
+	d, err := newDock(b.cfg, b.pinConfig)
 	if err != nil {
 		return fmt.Errorf("connect wayland: %w", err)
 	}
