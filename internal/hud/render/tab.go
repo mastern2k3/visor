@@ -74,6 +74,22 @@ const (
 	WobbleAmp    = 4.0
 	WobblePeriod = 0.9
 
+	// HaloPeriod is the permission halo's full pulse cycle length in seconds.
+	HaloPeriod = 1.6
+	// HaloSteps is how many discrete phase steps the halo pulse is quantised
+	// to per cycle. The original plan called for ~30 steps, which would mean
+	// ~30 DrawTab calls plus ~30 PutImage/CopyRGBA uploads of the ~72KB
+	// (BufW*BufH*4 = 335*54*4) buffer *per second, per blocked tab* — that
+	// contradicts the premise the whole design rests on, that rendering is
+	// event-driven and the 30Hz animation loop only moves windows. The
+	// 3-pass box blur drawHalo runs over the same buffer is roughly 760k
+	// samples and comfortably sub-millisecond, so the render cost was never
+	// the constraint; the redraw *count* was. 8 steps gives 8/1.6 = 5
+	// renders/sec — still a smooth ease for a slow pulse — for a sixth of
+	// the redraws, and only for tabs whose StateColors.Glow is true
+	// (permission only).
+	HaloSteps = 8
+
 	// Work-bar: a segmented strip along the capsule's bottom inside edge,
 	// replacing the old stacked dots which cramped at this width.
 	workSegs   = 3

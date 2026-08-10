@@ -17,14 +17,17 @@ import (
 // local (instead of importing state.Snapshot) decouples the dock from
 // daemon internals — schema changes to the IPC payload land here.
 type sessionView struct {
-	ID                string `json:"id"`
-	Activity          string `json:"activity"`
-	Attention         string `json:"attention"`
-	Waiting           string `json:"waiting"`
-	DisplayCWD        string `json:"display_cwd"`
-	Title             string `json:"title"`
-	BackgroundRunning int    `json:"background_running"`
-	BackgroundOutcome string `json:"background_outcome"`
+	ID                string    `json:"id"`
+	Activity          string    `json:"activity"`
+	Attention         string    `json:"attention"`
+	Waiting           string    `json:"waiting"`
+	DisplayCWD        string    `json:"display_cwd"`
+	Title             string    `json:"title"`
+	DisplayName       string    `json:"display_name"`
+	Glyph             string    `json:"glyph"`
+	StateSince        time.Time `json:"state_since"`
+	BackgroundRunning int       `json:"background_running"`
+	BackgroundOutcome string    `json:"background_outcome"`
 }
 
 // subscribeLoop keeps a subscription alive across daemon restarts. When the

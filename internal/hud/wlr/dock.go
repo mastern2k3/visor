@@ -279,12 +279,17 @@ func (d *dock) run(ctx context.Context) error {
 			}
 		}
 
-		// Animation tick: working tabs wobble, needs tabs protrude.
-		// Each surface decides whether its margin actually changed and only
-		// commits when it did.
+		// Animation tick: working tabs wobble, needs tabs protrude, expanded
+		// tabs' elapsed label ticks over once a second, and permission tabs
+		// pulse their halo. Each of these is an independent cheap no-op when
+		// its state doesn't apply, so calling all three for every surface on
+		// every ~20Hz iteration costs nothing for the common case of a
+		// collapsed, non-permission surface.
 		now := time.Now()
 		for _, s := range d.surfaces {
 			s.animateTick(now)
+			s.tickElapsed(now, d)
+			s.tickHalo(now, d)
 		}
 
 		// Force Dispatch() to return in bounded time. wl_callback is
@@ -334,21 +339,35 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			continue
 		}
 		seen[s.ID] = true
-		name := labelFor(s)
+		name := s.DisplayName
+		if name == "" {
+			// Older daemon or incomplete snapshot: fall back to the
+			// pre-Task-8 behaviour rather than showing an empty line 1.
+			name = labelFor(s)
+		}
 		// labelFor falls back to DisplayCWD when there is no title, so drop the
 		// path in that case rather than printing it twice.
 		path := s.DisplayCWD
 		if path == name {
 			path = ""
 		}
-		// Glyph and Elapsed stay zero for now: the daemon does not yet publish
-		// glyph/state_since, and sessionView does not yet carry them.
+		now := time.Now()
+		// Elapsed is derived fresh from "now" here, but truncated to whole
+		// seconds (stateElapsed) so that repeated calls within the same
+		// second are equal — otherwise the `ls.state != st` skip-check below
+		// would defeat itself and every broadcast would force a repaint
+		// regardless of whether anything about this surface actually
+		// changed. HaloPhase is filled in per-branch below: it is quantised
+		// against the surface's own wobbleStart (the same epoch tickHalo
+		// uses), which does not exist yet for a surface not yet created.
 		st := render.TabState{
 			Activity:          s.Activity,
 			Attention:         s.Attention,
 			Waiting:           s.Waiting,
+			Glyph:             s.Glyph,
 			Name:              name,
 			Path:              path,
+			Elapsed:           stateElapsed(now, s.StateSince),
 			TabRight:          true,
 			Shadow:            d.cfg.Shadow,
 			BackgroundRunning: s.BackgroundRunning,
@@ -356,6 +375,12 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		}
 		if ls, ok := d.surfaces[s.ID]; ok {
 			st.Expanded = ls.state.Expanded // preserve hover state across snapshot updates
+			// Use the surface's own wobbleStart as the halo epoch — the same
+			// one tickHalo will use on the next animation tick — so the
+			// phase baked in here and the phase tickHalo advances from later
+			// never disagree.
+			_, haloPhase := haloPhaseStep(now, ls.wobbleStart)
+			st.HaloPhase = haloPhase
 			if ls.state != st {
 				ls.state = st
 				ls.repaint(d)
@@ -363,15 +388,28 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			// Update animation-relevant fields; the next tick picks up changes.
 			ls.activity = s.Activity
 			ls.attention = s.Attention
+			ls.stateSince = s.StateSince
+			ls.lastElapsed = render.ElapsedString(st.Elapsed)
+			step, _ := haloPhaseStep(now, ls.wobbleStart)
+			ls.lastHaloStep = step
 			// Re-stack: slot may have changed.
 			ls.setSlot(slot)
 		} else {
+			// st.HaloPhase stays at its zero value: wobbleStart is only
+			// assigned inside newLayerSurface below, so there is no epoch to
+			// quantise against yet. The very next animation tick (tickHalo)
+			// corrects it to the real phase, well within the ~50ms idle-poll
+			// bound — imperceptible for a slow 1.6s pulse.
 			ls, err := newLayerSurface(d, slot, s.ID, s.Activity, s.Attention, st)
 			if err != nil {
 				d.log.Warn("create surface", "id", s.ID, "err", err)
 				slot++
 				continue
 			}
+			ls.stateSince = s.StateSince
+			ls.lastElapsed = render.ElapsedString(st.Elapsed)
+			step, _ := haloPhaseStep(now, ls.wobbleStart)
+			ls.lastHaloStep = step
 			d.surfaces[s.ID] = ls
 		}
 		slot++

@@ -67,6 +67,22 @@ type layerSurface struct {
 	wobbleStart time.Time
 	wobblePhase float64
 
+	// stateSince is the raw daemon timestamp state.Elapsed was last derived
+	// from. Kept separately from state.Elapsed (which is a computed,
+	// quantised value baked into the TabState) so tickElapsed can recompute
+	// "now - stateSince" on every animation tick without a full snapshot.
+	stateSince time.Time
+	// lastElapsed is the last elapsed-time string actually painted, so
+	// tickElapsed only repaints when the visible text would change.
+	lastElapsed string
+	// lastHaloStep is the last-painted render.HaloSteps index of the
+	// permission halo pulse, so tickHalo only repaints when the quantised
+	// step actually advances. wobbleStart doubles as the halo's phase epoch —
+	// working (wobble) and permission (halo) are mutually exclusive states
+	// per Palette.For's precedence, so sharing one reference time causes no
+	// interference between the two animations.
+	lastHaloStep int
+
 	// dirty is true when a state change happened but the most recent repaint
 	// couldn't acquire a buffer (both were in-flight). The next wl_buffer.release
 	// event will retry the repaint via the pool's onRelease callback.
@@ -280,6 +296,92 @@ func (s *layerSurface) computeRightMargin(now time.Time) int32 {
 		return base + int32(math.Round(wobbleAmp*t01))
 	}
 	return base
+}
+
+// stateElapsed computes time-in-state from a StateSince timestamp.
+//
+// It defends a zero timestamp: time.Since(time.Time{}) is about 2562047h
+// positive (not negative, so render.ElapsedString's own clamp does not save
+// us), and an older daemon, a replayed snapshot, or a future regression
+// could all produce one.
+//
+// The result is truncated to whole seconds so that repeated calls within the
+// same second are equal — otherwise the per-snapshot equality check in
+// applySnapshot (`if ls.state != st`) would defeat itself and every
+// broadcast would force a repaint regardless of whether anything about this
+// surface actually changed.
+func stateElapsed(now, since time.Time) time.Duration {
+	if since.IsZero() {
+		return 0
+	}
+	return now.Sub(since).Truncate(time.Second)
+}
+
+// elapsedChanged is the pure decision behind tickElapsed: whether the
+// rendered elapsed string for `since` at `now` differs from the last one
+// actually painted. Returns the freshly rendered string either way so the
+// caller can cache it without recomputing.
+func elapsedChanged(now, since time.Time, last string) (changed bool, str string) {
+	str = render.ElapsedString(stateElapsed(now, since))
+	return str != last, str
+}
+
+// haloPhaseStep quantises `now` into one of render.HaloSteps discrete steps
+// of the render.HaloPeriod pulse cycle (see render.HaloSteps for why 8 and
+// not ~30), returning both the step index and the HaloPhase in [0,1) it
+// corresponds to. The caller compares the step against the last-painted one
+// to decide whether a repaint is warranted at all.
+func haloPhaseStep(now, start time.Time) (step int, phase float64) {
+	// Integer nanosecond arithmetic, not float seconds: render.HaloPeriod
+	// (1.6) has no exact float64 representation, so a naive
+	// elapsed.Seconds()/HaloPeriod computation lands a hair under exact step
+	// boundaries (e.g. 0.6/1.6*8 evaluates to ~2.999999999995, not 3) and
+	// truncates one step short. Nanoseconds are exact integers, so the mod
+	// and scaled division below never misses a boundary.
+	periodNS := int64(render.HaloPeriod * float64(time.Second))
+	elapsedNS := now.Sub(start).Nanoseconds() % periodNS
+	if elapsedNS < 0 {
+		elapsedNS += periodNS
+	}
+	step = int(elapsedNS * int64(render.HaloSteps) / periodNS)
+	phase = float64(step) / float64(render.HaloSteps)
+	return step, phase
+}
+
+// tickElapsed repaints an expanded surface when its elapsed label would
+// change. Collapsed surfaces draw no panel text (state.Expanded gates
+// drawPanelText in render.DrawTab), so they never need this — which keeps
+// the steady-state cost at zero when nothing is hovered.
+func (s *layerSurface) tickElapsed(now time.Time, d *dock) {
+	if !s.state.Expanded {
+		return
+	}
+	changed, str := elapsedChanged(now, s.stateSince, s.lastElapsed)
+	if !changed {
+		return
+	}
+	s.lastElapsed = str
+	s.state.Elapsed = stateElapsed(now, s.stateSince)
+	s.repaint(d)
+}
+
+// tickHalo repaints a surface whose current state glows (permission only)
+// when the quantised halo step advances. Unlike tickElapsed this is not
+// gated on Expanded: the halo pulses on the capsule itself, which is visible
+// at rest. Non-glowing surfaces return immediately without even computing a
+// step, so a collapsed, non-permission surface never repaints on the
+// animation tick.
+func (s *layerSurface) tickHalo(now time.Time, d *dock) {
+	if !d.palette.For(s.state.Activity, s.state.Attention, s.state.Waiting).Glow {
+		return
+	}
+	step, phase := haloPhaseStep(now, s.wobbleStart)
+	if step == s.lastHaloStep {
+		return
+	}
+	s.lastHaloStep = step
+	s.state.HaloPhase = phase
+	s.repaint(d)
 }
 
 // restRightMargin is the static right-margin used at surface creation time

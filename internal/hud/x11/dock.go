@@ -153,16 +153,24 @@ func (d *dock) run() error {
 	}
 }
 
-// animate ticks each tab's animation state. Currently just the wobble
-// on "working" tabs; other state-driven motion would go here too.
+// animate ticks each tab's animation state: position wobble, the once-a-
+// second elapsed-label refresh on expanded tabs, and the permission halo
+// pulse. tick/tickElapsed/tickHalo are each individually cheap no-ops when
+// their state doesn't apply (not working / not hovered / not glowing), so
+// calling all three for every tab on every ~30Hz frame costs nothing for the
+// common case of a collapsed, non-permission tab.
 func (d *dock) animate(now time.Time) {
 	for _, t := range d.tabs {
 		t.tick(now)
+		t.tickElapsed(now)
+		t.tickHalo(now)
 	}
-	// The help tab doesn't wobble (it's not a session) but tick() is a
-	// no-op for non-working tabs, so calling it is harmless.
+	// The help tab doesn't wobble (it's not a session) but tick()/tickElapsed/
+	// tickHalo are no-ops for it, so calling them is harmless.
 	if d.helpT != nil {
 		d.helpT.tick(now)
+		d.helpT.tickElapsed(now)
+		d.helpT.tickHalo(now)
 	}
 }
 
