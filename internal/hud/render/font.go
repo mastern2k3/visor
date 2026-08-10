@@ -3,12 +3,8 @@
 package render
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
-	"strings"
 
 	"github.com/BurntSushi/freetype-go/freetype/truetype"
 )
@@ -41,45 +37,17 @@ func FontCandidates() []string { return fontCandidates }
 //
 // Returns the parsed font or an error describing both attempts.
 func LoadFont() (*truetype.Font, error) {
-	if ft, err := loadViaFontconfig(); err == nil {
-		return ft, nil
-	}
-	for _, p := range fontCandidates {
-		if ft, err := loadFromPath(p); err == nil {
-			return ft, nil
-		}
-	}
-	return nil, errors.New("no mono TTF font found: fc-match not on PATH (or returned non-TTF) and no fallback paths under /usr/share/fonts matched")
-}
-
-// loadViaFontconfig shells out to `fc-match` to get the system's preferred
-// monospaced TTF, then parses it. Returns an error if fc-match isn't on
-// PATH, doesn't return a TTF, or the file fails to parse.
-func loadViaFontconfig() (*truetype.Font, error) {
-	out, err := exec.Command("fc-match", "-f", "%{file}\n", "monospace:fontformat=TrueType").Output()
-	if err != nil {
-		return nil, fmt.Errorf("fc-match: %w", err)
-	}
-	path := strings.TrimSpace(string(out))
-	if path == "" {
-		return nil, errors.New("fc-match returned empty path")
-	}
-	return loadFromPath(path)
-}
-
-func loadFromPath(p string) (*truetype.Font, error) {
-	f, err := os.Open(p)
+	p, err := FontPath()
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return parseFont(f)
-}
-
-func parseFont(r io.Reader) (*truetype.Font, error) {
-	b, err := io.ReadAll(r)
+	b, err := os.ReadFile(p)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read font %s: %w", p, err)
 	}
-	return truetype.Parse(b)
+	ft, err := truetype.Parse(b)
+	if err != nil {
+		return nil, fmt.Errorf("parse font %s: %w", p, err)
+	}
+	return ft, nil
 }
