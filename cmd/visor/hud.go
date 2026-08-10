@@ -44,6 +44,30 @@ func (o *optionalBool) Set(s string) error {
 // shorthand for "--shadow=true", matching flag.Bool's usual ergonomics.
 func (o *optionalBool) IsBoolFlag() bool { return true }
 
+// rejectUnknownTheme prints the same "unknown theme" error the `theme`
+// subcommand uses and exits 2 when name is non-empty but not a recognized
+// theme name. An empty name (flag not passed) is not an error here — that
+// case is handled by config.Resolve falling through to env/file/default.
+//
+// This must run *before* config.Resolve/pinTheme are computed for the
+// --theme flag: config.Resolve's underlying setTheme silently discards an
+// unknown theme and keeps whatever the file/env/default already had, so
+// without this check `visor hud open --theme=bogus` would print nothing,
+// render with the fallback theme, and — worse — permanently pin the config
+// (disabling live reload) for a theme the user never actually got. Exiting
+// here keeps the two entry points (this flag, and `hud theme <name>`) from
+// drifting: same message shape, same exit code.
+func rejectUnknownTheme(cmdName, name string) {
+	if name == "" {
+		return
+	}
+	if _, ok := render.ThemeByName(name); !ok {
+		fmt.Fprintf(os.Stderr, "%s: unknown theme %q (have: %s)\n",
+			cmdName, name, strings.Join(render.Themes(), ", "))
+		os.Exit(2)
+	}
+}
+
 // pickBackend resolves a backend name to an implementation. cfg and
 // pinTheme are only meaningful to the in-process backends (x11, wlr); eww
 // renders from its own `visor ctl watch` subscription and has no concept of
@@ -69,13 +93,14 @@ func runHUD(args []string) {
 	sub := args[0]
 	fs := flag.NewFlagSet("hud "+sub, flag.ExitOnError)
 	backendName := fs.String("backend", "eww", "HUD backend (eww|x11|wlr)")
-	themeFlag := fs.String("theme", "", "palette theme (tuned|silent|traffic); pins the theme, disabling live reload")
+	themeFlag := fs.String("theme", "", "palette theme (tuned|silent|traffic); pins the whole config (theme AND shadow), disabling live reload for both")
 	var shadowFlag optionalBool
 	fs.Var(&shadowFlag, "shadow", "draw the HUD's own drop shadow (true|false)")
 	_ = fs.Parse(args[1:])
 
 	switch sub {
 	case "install", "open", "close":
+		rejectUnknownTheme("hud "+sub, *themeFlag)
 		cfg := config.Resolve(*themeFlag, shadowFlag.val)
 		b, err := pickBackend(*backendName, cfg, *themeFlag != "")
 		if err != nil {
@@ -108,11 +133,7 @@ func runHUD(args []string) {
 			os.Exit(2)
 		}
 		name := fs.Arg(0)
-		if _, ok := render.ThemeByName(name); !ok {
-			fmt.Fprintf(os.Stderr, "hud theme: unknown theme %q (have: %s)\n",
-				name, strings.Join(render.Themes(), ", "))
-			os.Exit(2)
-		}
+		rejectUnknownTheme("hud theme", name)
 		c := config.Load()
 		c.Theme = name
 		if err := config.Save(c); err != nil {

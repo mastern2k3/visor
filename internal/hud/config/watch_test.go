@@ -32,4 +32,16 @@ func TestWatch_EmitsOnChange(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("no config event within 3s")
 	}
+
+	// The 80ms debounce exists precisely so a single Save collapses into a
+	// single emission — Save's WriteFile typically produces more than one
+	// fsnotify event (e.g. a truncate/write pair), and without debouncing the
+	// dock would repaint once per fsnotify event instead of once per file
+	// change. Wait comfortably longer than the debounce window for a second
+	// emission that should never arrive.
+	select {
+	case extra := <-ch:
+		t.Fatalf("one Save should collapse into exactly one emission via the debounce; got an extra event %+v", extra)
+	case <-time.After(300 * time.Millisecond):
+	}
 }

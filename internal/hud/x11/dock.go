@@ -226,6 +226,18 @@ func (d *dock) applyConfig(cfg config.Config) {
 		d.helpT.rendered = false
 		d.helpT.render(now)
 	}
+	// The help *window* (opened by clicking the help tab) is a separate
+	// object from the help tab above — it captures the palette by value at
+	// open time to draw its color-swatch legend (helpContent in help.go).
+	// Its whole purpose is documenting the live colour language, so if it's
+	// open when the theme changes, a stale legend would actively mislead
+	// rather than merely look outdated. helpWindow.render regenerates its
+	// pixmap and redraws in place; it is nil-safe to skip when the window
+	// isn't currently open.
+	if d.helpW != nil {
+		d.helpW.palette = d.palette
+		d.helpW.render(d.tipFont)
+	}
 	d.X.Sync()
 }
 
