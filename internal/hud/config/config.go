@@ -41,6 +41,26 @@ func Path() string {
 	return filepath.Join(base, "visor", "hud.conf")
 }
 
+// parseBool parses common boolean representations. It returns (value, ok) where
+// ok indicates the string was a recognized boolean token.
+func parseBool(v string) (bool, bool) {
+	switch v {
+	case "true", "on", "yes", "1":
+		return true, true
+	case "false", "off", "no", "0":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// setTheme validates a theme name via render.ThemeByName and sets it if valid.
+func setTheme(dst *string, candidate string) {
+	if _, known := render.ThemeByName(candidate); known {
+		*dst = candidate
+	}
+}
+
 // Parse reads flat key = value lines. Unknown keys, malformed lines and
 // unknown theme names are ignored in favour of defaults — a bad config must
 // degrade, never prevent the HUD from starting.
@@ -60,18 +80,15 @@ func Parse(r io.Reader) Config {
 		v = strings.TrimSpace(v)
 		switch k {
 		case "theme":
-			if _, known := render.ThemeByName(v); known {
-				c.Theme = v
-			}
+			setTheme(&c.Theme, v)
 		case "shadow":
-			switch v {
-			case "true", "on", "yes", "1":
-				c.Shadow = true
-			case "false", "off", "no", "0":
-				c.Shadow = false
+			if val, ok := parseBool(v); ok {
+				c.Shadow = val
 			}
 		}
 	}
+	// Scanner errors are deliberately absorbed; this package's contract is
+	// that unreadable input degrades to defaults, never prevents startup.
 	return c
 }
 
@@ -90,22 +107,15 @@ func Load() Config {
 func Resolve(flagTheme string, flagShadow *bool) Config {
 	c := Load()
 	if v := os.Getenv("VISOR_THEME"); v != "" {
-		if _, known := render.ThemeByName(v); known {
-			c.Theme = v
-		}
+		setTheme(&c.Theme, v)
 	}
 	if v := os.Getenv("VISOR_SHADOW"); v != "" {
-		switch v {
-		case "true", "on", "yes", "1":
-			c.Shadow = true
-		case "false", "off", "no", "0":
-			c.Shadow = false
+		if val, ok := parseBool(v); ok {
+			c.Shadow = val
 		}
 	}
 	if flagTheme != "" {
-		if _, known := render.ThemeByName(flagTheme); known {
-			c.Theme = flagTheme
-		}
+		setTheme(&c.Theme, flagTheme)
 	}
 	if flagShadow != nil {
 		c.Shadow = *flagShadow

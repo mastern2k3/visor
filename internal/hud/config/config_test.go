@@ -90,3 +90,35 @@ func TestLoad_MissingFileYieldsDefaults(t *testing.T) {
 		t.Errorf("Load(missing) = %+v, want {silent true}", got)
 	}
 }
+
+func TestParseBool(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+		ok    bool
+	}{
+		// True variants
+		{"true", true, true},
+		{"on", true, true},
+		{"yes", true, true},
+		{"1", true, true},
+		// False variants
+		{"false", false, true},
+		{"off", false, true},
+		{"no", false, true},
+		{"0", false, true},
+		// Invalid
+		{"", false, false},
+		{"maybe", false, false},
+		{"2", false, false},
+		{"nope", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, ok := parseBool(tt.input)
+			if ok != tt.ok || (ok && got != tt.want) {
+				t.Errorf("parseBool(%q) = (%v, %v), want (%v, %v)", tt.input, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
