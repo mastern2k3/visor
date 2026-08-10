@@ -64,6 +64,12 @@ type tabOpts struct {
 	// this is not updated when state changes.
 	color    uint32 // 0xRRGGBB
 	expanded bool
+
+	// argb/visual are copied from the dock's one-time capability detection.
+	// argb selects the depth-32 window + XShape input region path; visual is
+	// only meaningful when argb is true.
+	argb   bool
+	visual xproto.Visualid
 }
 
 // tab is one X11 window representing one Claude session.
@@ -93,10 +99,6 @@ type tab struct {
 
 	wobblePhase float64
 	wobbleStart time.Time
-
-	// xgraphics image used as the window's background pixmap when expanded.
-	// We retain it so we can free the X pixmap explicitly on collapse.
-	expandedImg *xgraphics.Image
 
 	// overflow is set when the rendered label is wider than the panel can show.
 	// When true, hovering the tab also spawns a tooltip window with the
@@ -169,29 +171,40 @@ func (t *tab) tick(now time.Time) {
 }
 
 func newTab(X *xgbutil.XUtil, mon monitor, opt tabOpts) (*tab, error) {
-	win, err := xwindow.Generate(X)
-	if err != nil {
-		return nil, err
-	}
-
 	opt.rightX = mon.x + mon.w
 	opt.x = opt.rightX - collapsedVisibleW
-	bgPixel := opt.color & 0x00_ff_ff_ff // 24-bit colour (no alpha on default visual)
 
 	// The window is always bufW wide; only its X position changes
 	// between states. The off-screen-right portion is clipped by X.
-	if err := win.CreateChecked(
-		X.RootWin(),
-		opt.x, opt.y, bufW, bufH,
-		xproto.CwBackPixel|xproto.CwOverrideRedirect|xproto.CwEventMask,
-		bgPixel,
-		1, // override-redirect = true
-		uint32(xproto.EventMaskButtonPress|
-			xproto.EventMaskEnterWindow|
-			xproto.EventMaskLeaveWindow|
-			xproto.EventMaskExposure),
-	); err != nil {
-		return nil, err
+	var win *xwindow.Window
+	if opt.argb {
+		w, err := newARGBWindow(X, opt.visual, opt.x, opt.y, bufW, bufH)
+		if err != nil {
+			return nil, err
+		}
+		win = w
+	} else {
+		w, err := xwindow.Generate(X)
+		if err != nil {
+			return nil, err
+		}
+		// Root depth: no alpha, so the background pixel is the best stand-in
+		// for the capsule colour until the first pixmap paint lands.
+		bgPixel := opt.color & 0x00_ff_ff_ff
+		if err := w.CreateChecked(
+			X.RootWin(),
+			opt.x, opt.y, bufW, bufH,
+			xproto.CwBackPixel|xproto.CwOverrideRedirect|xproto.CwEventMask,
+			bgPixel,
+			1, // override-redirect = true
+			uint32(xproto.EventMaskButtonPress|
+				xproto.EventMaskEnterWindow|
+				xproto.EventMaskLeaveWindow|
+				xproto.EventMaskExposure),
+		); err != nil {
+			return nil, err
+		}
+		win = w
 	}
 
 	// EWMH hints so cooperative WMs still treat it sensibly (dock-type,
@@ -237,10 +250,6 @@ func newTab(X *xgbutil.XUtil, mon monitor, opt tabOpts) (*tab, error) {
 
 func (t *tab) destroy() {
 	t.hideTooltip()
-	if t.expandedImg != nil {
-		t.expandedImg.Destroy()
-		t.expandedImg = nil
-	}
 	if t.win != nil {
 		t.win.Destroy()
 		t.win = nil
@@ -311,6 +320,14 @@ func (t *tab) setExpanded(expand bool) {
 	}
 	t.opt.x = newX
 	t.win.Move(newX, t.opt.y)
+
+	// The input region is state-dependent: the panel is only clickable while
+	// expanded. Without this the revealed panel would be click-through.
+	if t.opt.argb {
+		if err := setInputRegion(t.X, t.win.Id, t.inputRects()); err != nil {
+			slog.Warn("x11 tab input shape", "id", t.sess.ID, "err", err)
+		}
+	}
 
 	if expand && t.overflow {
 		t.showTooltip()
@@ -431,13 +448,18 @@ func (t *tab) tabState() render.TabState {
 		path = ""
 	}
 	return render.TabState{
-		Activity:          t.sess.Activity,
-		Attention:         t.sess.Attention,
-		Waiting:           t.sess.Waiting,
-		Name:              name,
-		Path:              path,
-		Expanded:          true,
-		Shadow:            t.shadow,
+		Activity:  t.sess.Activity,
+		Attention: t.sess.Attention,
+		Waiting:   t.sess.Waiting,
+		Name:      name,
+		Path:      path,
+		Expanded:  true,
+		// Both of these hang off alpha. Without a compositor the padding around
+		// the capsule is opaque black, so a shadow drawn into it is a black box
+		// and an antialiased corner is a black notch — square and shadowless is
+		// the only honest rendering.
+		Shadow:            t.shadow && t.opt.argb,
+		Square:            !t.opt.argb,
 		BackgroundRunning: t.sess.BackgroundRunning,
 		BackgroundOutcome: t.sess.BackgroundOutcome,
 	}
@@ -452,38 +474,44 @@ func (t *tab) render() {
 		return
 	}
 
-	if t.expandedImg != nil {
-		t.expandedImg.Destroy()
-		t.expandedImg = nil
-	}
-
 	rt := render.DrawTab(st, t.faces, t.palette)
 	t.overflow = rt.Overflow
 	t.lastState = st
 	t.rendered = true
 
-	// Wrap the RGBA into an xgraphics.Image for X upload. xgraphics.Image
-	// stores pixels in BGRA order, so we must swap R and B channels rather
-	// than doing a raw copy.
-	im := xgraphics.New(t.X, rt.RGBA.Bounds())
-	src := rt.RGBA.Pix
-	dst := im.Pix
-	if len(src) != len(dst) {
-		panic("render: src/dst pixel buffer size mismatch")
+	depth := byte(32)
+	if !t.opt.argb {
+		depth = t.X.Screen().RootDepth
 	}
-	// RGBA (image.RGBA) → BGRA (xgraphics.Image), preserving alpha.
-	for i := 0; i < len(src); i += 4 {
-		dst[i+0] = src[i+2] // B
-		dst[i+1] = src[i+1] // G
-		dst[i+2] = src[i+0] // R
-		dst[i+3] = src[i+3] // A
+	if err := uploadRGBA(t.X, t.win.Id, rt.RGBA, depth); err != nil {
+		// Non-fatal: a tab that fails to paint is better than a dead dock.
+		slog.Warn("x11 tab upload", "id", t.sess.ID, "err", err)
+		return
 	}
+	if t.opt.argb {
+		if err := setInputRegion(t.X, t.win.Id, t.inputRects()); err != nil {
+			// Shape is best-effort; without it the padding merely eats clicks.
+			slog.Warn("x11 tab input shape", "id", t.sess.ID, "err", err)
+		}
+	}
+}
 
-	im.CreatePixmap()
-	im.XDraw()
-	im.XSurfaceSet(t.win.Id)
-	xproto.ClearArea(t.X.Conn(), false, t.win.Id, 0, 0, bufW, bufH)
-	t.expandedImg = im
+// inputRects is the clickable region: never the transparent shadow padding.
+// Coordinates are window-local, matching render.DrawTab's x11 layout — the
+// capsule starts ShadowPad in from the window's left edge and the panel butts
+// straight onto it.
+func (t *tab) inputRects() []xproto.Rectangle {
+	r := []xproto.Rectangle{{
+		X: render.ShadowPad, Y: render.ShadowPad,
+		Width: render.CapsuleW, Height: render.ContentH,
+	}}
+	if t.opt.expanded {
+		r = append(r, xproto.Rectangle{
+			X: render.ShadowPad + render.CapsuleW, Y: render.ShadowPad,
+			Width: render.ExpandedW - render.CapsuleW, Height: render.ContentH,
+		})
+	}
+	return r
 }
 
 // displayLabel picks what to show inside the expanded tab.

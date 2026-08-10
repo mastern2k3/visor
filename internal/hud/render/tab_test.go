@@ -124,6 +124,27 @@ func TestDrawTab_CornersAreAntialiased(t *testing.T) {
 	}
 }
 
+// Square is the inverse of TestDrawTab_CornersAreAntialiased: it is the x11
+// no-compositor fallback, where there is no alpha to blend the corner against
+// (a partially transparent pixel would arrive on screen as partially black),
+// so the capsule's leading corners must be hard. The top-left corner pixel of
+// the capsule is the tightest probe: with Radius it is outside the shape
+// entirely, with Square it is fully inside it.
+func TestDrawTab_SquareGivesOpaqueCorners(t *testing.T) {
+	img := DrawTab(TabState{Expanded: true, Shadow: false, Square: true}, nil, silent())
+	if got := img.RGBA.RGBAAt(ShadowPad, ShadowPad); got.A != 0xff {
+		t.Errorf("square capsule top-left alpha = %#x, want 0xff", got.A)
+	}
+	// And no antialiased pixel anywhere in the corner box.
+	for y := ShadowPad; y < ShadowPad+Radius; y++ {
+		for x := ShadowPad; x < ShadowPad+Radius; x++ {
+			if a := img.RGBA.RGBAAt(x, y).A; a != 0xff {
+				t.Fatalf("corner pixel (%d,%d) alpha = %#x, want 0xff with Square", x, y, a)
+			}
+		}
+	}
+}
+
 // The shadow and halo shapes are unclipped on purpose — they must spread into
 // the transparent pad. What they must NOT do is reach across the capsule into
 // the panel: in the x11 orientation the panel is drawn first and the capsule's

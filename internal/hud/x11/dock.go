@@ -36,6 +36,14 @@ type dock struct {
 	// help window), which draw with freetype rather than gg.
 	tipFont *truetype.Font
 
+	// visual/argb are resolved once at startup. argb is true only when both
+	// halves hold: a depth-32 TrueColor visual exists AND a compositing manager
+	// is running to blend it. Either one alone is useless — an unblended alpha
+	// window renders its transparent padding as black. When argb is false the
+	// tabs stay at root depth and render squared and shadowless.
+	visual xproto.Visualid
+	argb   bool
+
 	// Synthetic "help" tab pinned at slot 0; clicking it toggles helpW.
 	helpT *tab
 	helpW *helpWindow
@@ -71,7 +79,18 @@ func newDock() (*dock, error) {
 	} else {
 		d.tipFont = f
 	}
-	d.log.Info("X connected", "mon_x", mon.x, "mon_y", mon.y, "mon_w", mon.w, "mon_h", mon.h)
+	// Detect alpha capability exactly once, and log the fallback exactly once —
+	// per-tab logging here would spam a line per session.
+	visual, visualOK := argbVisual(X)
+	d.visual = visual
+	d.argb = visualOK && hasCompositor(X)
+	if !d.argb {
+		d.log.Info("no compositing manager or ARGB visual; " +
+			"falling back to squared corners without shadow")
+	}
+
+	d.log.Info("X connected", "mon_x", mon.x, "mon_y", mon.y, "mon_w", mon.w,
+		"mon_h", mon.h, "argb", d.argb)
 	return d, nil
 }
 
@@ -151,7 +170,9 @@ func (d *dock) animate(now time.Time) {
 // click handler to toggle the help window.
 func (d *dock) makeHelpTab() error {
 	y := d.mon.y + dockTopMargin
-	t, err := newTab(d.X, d.mon, tabOpts{y: y, color: d.bgPixel(helpTabSession)})
+	t, err := newTab(d.X, d.mon, tabOpts{
+		y: y, color: d.bgPixel(helpTabSession), argb: d.argb, visual: d.visual,
+	})
 	if err != nil {
 		return err
 	}
@@ -270,7 +291,9 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		y := d.mon.y + topMargin + (i+1)*render.RowPitch
 		t, ok := d.tabs[s.ID]
 		if !ok {
-			nt, err := newTab(d.X, d.mon, tabOpts{y: y, color: d.bgPixel(s)})
+			nt, err := newTab(d.X, d.mon, tabOpts{
+				y: y, color: d.bgPixel(s), argb: d.argb, visual: d.visual,
+			})
 			if err != nil {
 				d.log.Warn("tab create failed", "id", s.ID, "err", err)
 				continue

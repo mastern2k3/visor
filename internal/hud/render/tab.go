@@ -90,6 +90,11 @@ type TabState struct {
 	// Shadow enables visor's own drop shadow. Disabled by config when the
 	// user prefers their compositor's shadow, or none.
 	Shadow bool
+	// Square draws every shape with corner radius 0 instead of Radius. It is
+	// the x11 no-compositor fallback: without a compositing manager the window
+	// has no alpha to blend against, so a rounded, antialiased corner arrives
+	// on screen as a partially black one. Opt-in; the default is rounded.
+	Square bool
 
 	BackgroundRunning int
 	BackgroundOutcome string // "" | "done" | "failed"
@@ -125,6 +130,15 @@ func panelRect(tabRight bool) image.Rectangle {
 		return image.Rect(0, ShadowPad, BufW-CapsuleW, ShadowPad+ContentH)
 	}
 	return image.Rect(ShadowPad+CapsuleW, ShadowPad, BufW, ShadowPad+ContentH)
+}
+
+// cornerRadius is the radius every shape in this tab draws with: Radius
+// normally, 0 when the state asks for squared corners. See TabState.Square.
+func cornerRadius(s TabState) float64 {
+	if s.Square {
+		return 0
+	}
+	return Radius
 }
 
 // workBarY is the buffer y of the work bar's top edge.
@@ -183,13 +197,14 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 	cx := float64(capsuleX(s.TabRight))
 	cy := float64(ShadowPad)
 	ch := float64(ContentH)
+	rad := cornerRadius(s)
 
 	// --- panel (drawn first so the capsule overlaps its edge) ---------------
 	if s.Expanded {
 		pr := panelRect(s.TabRight)
 		px, pw := float64(pr.Min.X), float64(pr.Dx())
 		if s.Shadow {
-			drawShadow(dc, px, cy, pw, ch)
+			drawShadow(dc, px, cy, pw, ch, rad)
 		}
 		grad := gg.NewLinearGradient(0, cy, 0, cy+ch)
 		grad.AddColorStop(0, rgbaOf(p.PanelTop))
@@ -198,7 +213,7 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 			// TabRight: left corners round, right corners pushed outside the
 			// clip by the +Radius overhang. Otherwise both edges are square.
 			if s.TabRight {
-				dc.DrawRoundedRectangle(px, cy, pw+Radius, ch, Radius)
+				dc.DrawRoundedRectangle(px, cy, pw+rad, ch, rad)
 			} else {
 				dc.DrawRectangle(px, cy, pw, ch)
 			}
@@ -206,7 +221,7 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 			dc.Fill()
 
 			if s.TabRight {
-				dc.DrawRoundedRectangle(px+0.5, cy+0.5, pw+Radius-1, ch-1, Radius)
+				dc.DrawRoundedRectangle(px+0.5, cy+0.5, pw+rad-1, ch-1, rad)
 			} else {
 				dc.DrawRectangle(px+0.5, cy+0.5, pw-1, ch-1)
 			}
@@ -218,10 +233,10 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 
 	// --- capsule ----------------------------------------------------------
 	if s.Shadow {
-		drawShadow(dc, cx, cy, float64(CapsuleW), ch)
+		drawShadow(dc, cx, cy, float64(CapsuleW), ch, rad)
 	}
 	if sc.Glow {
-		drawHalo(dc, cx, cy, float64(CapsuleW), ch, sc.Halo, s.HaloPhase)
+		drawHalo(dc, cx, cy, float64(CapsuleW), ch, sc.Halo, s.HaloPhase, rad)
 	}
 
 	grad := gg.NewLinearGradient(0, cy, 0, cy+ch)
@@ -229,13 +244,13 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 	grad.AddColorStop(0.62, rgbaOf(sc.Base))
 	grad.AddColorStop(1, rgbaOf(sc.Bot))
 	clipTo(dc, capsuleRect(s.TabRight), func() {
-		dc.DrawRoundedRectangle(cx, cy, float64(CapsuleW)+Radius, ch, Radius)
+		dc.DrawRoundedRectangle(cx, cy, float64(CapsuleW)+rad, ch, rad)
 		dc.SetFillStyle(grad)
 		dc.Fill()
 
 		// Specular hairline inset along the top and leading edges. It is what
 		// makes the capsule read as an object rather than a painted stripe.
-		dc.DrawRoundedRectangle(cx+0.5, cy+0.5, float64(CapsuleW)+Radius-1, ch-1, Radius)
+		dc.DrawRoundedRectangle(cx+0.5, cy+0.5, float64(CapsuleW)+rad-1, ch-1, rad)
 		dc.SetRGBA(1, 1, 1, 0.30)
 		dc.SetLineWidth(1)
 		dc.Stroke()
@@ -375,9 +390,9 @@ func drawWorkBar(dc *gg.Context, s TabState, p Palette) {
 // tab rendering is event-driven (state change, hover, or a once-per-second
 // elapsed tick on an expanded tab). The 30Hz animation loop only moves
 // windows — it never re-renders — so there is nothing here to optimise.
-func drawShadow(dc *gg.Context, x, y, w, h float64) {
+func drawShadow(dc *gg.Context, x, y, w, h, rad float64) {
 	sh := gg.NewContext(BufW, BufH)
-	sh.DrawRoundedRectangle(x, y+1, w, h, Radius)
+	sh.DrawRoundedRectangle(x, y+1, w, h, rad)
 	sh.SetRGBA(0, 0, 0, 0.55)
 	sh.Fill()
 	dc.DrawImage(boxBlur(sh.Image().(*image.RGBA), 3, 3), 0, 0)
@@ -389,14 +404,14 @@ func drawShadow(dc *gg.Context, x, y, w, h float64) {
 // Like drawShadow, the shape carries no +Radius overhang: it extends 2px past
 // the capsule on every side and nothing more, so the glow cannot wash the
 // panel's leading edge in the x11 orientation.
-func drawHalo(dc *gg.Context, x, y, w, h float64, halo uint32, phase float64) {
+func drawHalo(dc *gg.Context, x, y, w, h float64, halo uint32, phase, rad float64) {
 	// (1-cos)/2 maps phase to [0,1] with zero derivative at the endpoints, so
 	// the pulse eases rather than snapping at its extremes.
 	t := (1 - math.Cos(phase*2*math.Pi)) / 2
 	alpha := 0.25 + 0.35*t
 	c := rgbaOf(halo)
 	g := gg.NewContext(BufW, BufH)
-	g.DrawRoundedRectangle(x-2, y-2, w+4, h+4, Radius+2)
+	g.DrawRoundedRectangle(x-2, y-2, w+4, h+4, rad+2)
 	g.SetRGBA(float64(c.R)/255, float64(c.G)/255, float64(c.B)/255, alpha)
 	g.Fill()
 	dc.DrawImage(boxBlur(g.Image().(*image.RGBA), 4, 2), 0, 0)
