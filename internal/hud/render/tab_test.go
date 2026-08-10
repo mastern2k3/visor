@@ -7,6 +7,13 @@ import (
 
 func silent() Palette { return Theme("silent") }
 
+// withShadow returns s with Shadow set, so a test can render the same state
+// twice and diff the two buffers.
+func withShadow(s TabState, on bool) TabState {
+	s.Shadow = on
+	return s
+}
+
 func TestDrawTab_BufferSize(t *testing.T) {
 	img := DrawTab(TabState{Expanded: true}, nil, silent())
 	if img.RGBA.Bounds().Dx() != BufW || img.RGBA.Bounds().Dy() != BufH {
@@ -114,6 +121,67 @@ func TestDrawTab_CornersAreAntialiased(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no partial-alpha pixel in the corner; corner is not antialiased")
+	}
+}
+
+// The shadow and halo shapes are unclipped on purpose — they must spread into
+// the transparent pad. What they must NOT do is reach across the capsule into
+// the panel: in the x11 orientation the panel is drawn first and the capsule's
+// shadow/halo land on top of it, so any rightward overhang shows up as a dark
+// band (or coloured wash) cast by nothing. Sampling a little way into the panel
+// and requiring it to match the shadow-off render pins that.
+func TestDrawTab_CapsuleShadowDoesNotDarkenPanel(t *testing.T) {
+	base := TabState{Expanded: true, TabRight: false}
+	on := DrawTab(withShadow(base, true), nil, silent())
+	off := DrawTab(withShadow(base, false), nil, silent())
+	x, y := ShadowPad+CapsuleW+12, BufH/2
+	if got, want := on.RGBA.RGBAAt(x, y), off.RGBA.RGBAAt(x, y); got != want {
+		t.Errorf("panel pixel at x=%d with shadow = %v, without = %v; the capsule's shadow bled into the panel", x, got, want)
+	}
+}
+
+// Same invariant for the permission halo, whose shape is larger than the
+// shadow's and whose colour makes a bleed even more obvious. The panel gradient
+// does not depend on state, so a non-glowing state is a valid baseline.
+func TestDrawTab_CapsuleHaloDoesNotWashPanel(t *testing.T) {
+	p := silent()
+	glow := TabState{
+		Expanded: true, TabRight: false,
+		Activity: "waiting", Attention: "needs", Waiting: "permission",
+		HaloPhase: 0.5, // peak alpha
+	}
+	if !p.For(glow.Activity, glow.Attention, glow.Waiting).Glow {
+		t.Fatalf("permission state is not a glow state; test no longer exercises the halo")
+	}
+	plain := TabState{
+		Expanded: true, TabRight: false,
+		Activity: "waiting", Attention: "needs", Waiting: "user",
+	}
+	x, y := ShadowPad+CapsuleW+12, BufH/2
+	got := DrawTab(glow, nil, p).RGBA.RGBAAt(x, y)
+	want := DrawTab(plain, nil, p).RGBA.RGBAAt(x, y)
+	if got != want {
+		t.Errorf("panel pixel at x=%d with halo = %v, without = %v; the halo washed the panel", x, got, want)
+	}
+}
+
+// Corner rule: round the leading (left) edge of the outermost visible element,
+// never an edge that butts another one. The two backends are mirrored, so the
+// panel's left edge is rounded for wlr (it is the leading edge) and square for
+// x11 (it butts the capsule). A future "simplification" that rounds both would
+// put a visible notch between the x11 panel and its capsule.
+func TestDrawTab_PanelLeftCornerFollowsOrientation(t *testing.T) {
+	// x11: the panel's top-left pixel butts the capsule, so it must be square,
+	// i.e. fully opaque right at the corner.
+	x11 := DrawTab(TabState{Expanded: true, Shadow: false, TabRight: false}, nil, silent())
+	if got := x11.RGBA.RGBAAt(ShadowPad+CapsuleW, ShadowPad); got.A != 0xff {
+		t.Errorf("x11 panel top-left alpha = %#x, want 0xff (square corner; a rounded one leaves a notch beside the capsule)", got.A)
+	}
+	// wlr: the panel's left edge is the leading edge, so the corner is rounded
+	// and its outermost pixel falls outside the shape.
+	wlr := DrawTab(TabState{Expanded: true, Shadow: false, TabRight: true}, nil, silent())
+	if got := wlr.RGBA.RGBAAt(0, ShadowPad); got.A != 0 {
+		t.Errorf("wlr panel top-left alpha = %#x, want 0 (rounded corner)", got.A)
 	}
 }
 

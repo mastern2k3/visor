@@ -20,7 +20,12 @@ const (
 	// left, top and bottom. There is none on the right: that edge is flush
 	// with (or past) the screen edge.
 	ShadowPad = 5
-	// ExpandedW is the visible width of the panel when hovered.
+	// ExpandedW is the width of the capsule-plus-panel content, i.e. the
+	// buffer width minus the shadow padding. It is NOT the panel's own width:
+	// the panel is BufW-ShadowPad-CapsuleW = 282 px in the x11 orientation and
+	// BufW-CapsuleW = 287 px in the wlr one, because the pad sits on the far
+	// side of the capsule in the former and on the far side of the panel in
+	// the latter.
 	ExpandedW = 300
 
 	// BufW/BufH are the rendered buffer dimensions.
@@ -359,13 +364,20 @@ func drawWorkBar(dc *gg.Context, s TabState, p Palette) {
 // drawn next. The blur is a three-pass box blur, a good enough gaussian
 // approximation at this radius.
 //
+// The shape is exactly w wide — it does NOT take the +Radius overhang the
+// capsule and panel fills use. Those need the overhang to keep their right
+// corners square; the shadow does not, because its right corners sit under the
+// caster's own opaque pixels and are invisible either way. Giving it the
+// overhang instead pushed a dark band ~Radius+blur px past the capsule, which
+// in the x11 orientation lands on the panel as a shadow cast by nothing.
+//
 // Allocating a full-buffer context per call is deliberate and not a hot path:
 // tab rendering is event-driven (state change, hover, or a once-per-second
 // elapsed tick on an expanded tab). The 30Hz animation loop only moves
 // windows — it never re-renders — so there is nothing here to optimise.
 func drawShadow(dc *gg.Context, x, y, w, h float64) {
 	sh := gg.NewContext(BufW, BufH)
-	sh.DrawRoundedRectangle(x, y+1, w+Radius, h, Radius)
+	sh.DrawRoundedRectangle(x, y+1, w, h, Radius)
 	sh.SetRGBA(0, 0, 0, 0.55)
 	sh.Fill()
 	dc.DrawImage(boxBlur(sh.Image().(*image.RGBA), 3, 3), 0, 0)
@@ -373,6 +385,10 @@ func drawShadow(dc *gg.Context, x, y, w, h float64) {
 
 // drawHalo paints a soft coloured glow around the capsule, pulsing with phase.
 // Only used for the permission state.
+//
+// Like drawShadow, the shape carries no +Radius overhang: it extends 2px past
+// the capsule on every side and nothing more, so the glow cannot wash the
+// panel's leading edge in the x11 orientation.
 func drawHalo(dc *gg.Context, x, y, w, h float64, halo uint32, phase float64) {
 	// (1-cos)/2 maps phase to [0,1] with zero derivative at the endpoints, so
 	// the pulse eases rather than snapping at its extremes.
@@ -380,66 +396,10 @@ func drawHalo(dc *gg.Context, x, y, w, h float64, halo uint32, phase float64) {
 	alpha := 0.25 + 0.35*t
 	c := rgbaOf(halo)
 	g := gg.NewContext(BufW, BufH)
-	g.DrawRoundedRectangle(x-2, y-2, w+Radius+4, h+4, Radius+2)
+	g.DrawRoundedRectangle(x-2, y-2, w+4, h+4, Radius+2)
 	g.SetRGBA(float64(c.R)/255, float64(c.G)/255, float64(c.B)/255, alpha)
 	g.Fill()
 	dc.DrawImage(boxBlur(g.Image().(*image.RGBA), 4, 2), 0, 0)
-}
-
-// boxBlur runs `passes` box-blur passes of the given radius over a
-// premultiplied RGBA image.
-func boxBlur(src *image.RGBA, r, passes int) *image.RGBA {
-	cur := src
-	for i := 0; i < passes; i++ {
-		cur = boxBlurOnce(cur, r)
-	}
-	return cur
-}
-
-func boxBlurOnce(src *image.RGBA, r int) *image.RGBA {
-	b := src.Bounds()
-	w, h := b.Dx(), b.Dy()
-	// Separable: horizontal pass into tmp, vertical pass into dst. O(n*r)
-	// rather than the O(n*r^2) a naive 2D kernel would cost.
-	tmp := image.NewRGBA(b)
-	dst := image.NewRGBA(b)
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			var sr, sg, sb, sa, n int
-			for d := -r; d <= r; d++ {
-				px := x + d
-				if px < 0 || px >= w {
-					continue
-				}
-				c := src.RGBAAt(px, y)
-				sr += int(c.R)
-				sg += int(c.G)
-				sb += int(c.B)
-				sa += int(c.A)
-				n++
-			}
-			tmp.SetRGBA(x, y, color.RGBA{uint8(sr / n), uint8(sg / n), uint8(sb / n), uint8(sa / n)})
-		}
-	}
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			var sr, sg, sb, sa, n int
-			for d := -r; d <= r; d++ {
-				py := y + d
-				if py < 0 || py >= h {
-					continue
-				}
-				c := tmp.RGBAAt(x, py)
-				sr += int(c.R)
-				sg += int(c.G)
-				sb += int(c.B)
-				sa += int(c.A)
-				n++
-			}
-			dst.SetRGBA(x, y, color.RGBA{uint8(sr / n), uint8(sg / n), uint8(sb / n), uint8(sa / n)})
-		}
-	}
-	return dst
 }
 
 // rgbaOf converts a packed 0xRRGGBB to an opaque color.RGBA.
