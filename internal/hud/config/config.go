@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,11 +55,27 @@ func parseBool(v string) (bool, bool) {
 	}
 }
 
-// setTheme validates a theme name via render.ThemeByName and sets it if valid.
+// setTheme validates a theme name via render.ThemeByName and sets it if
+// valid. An unrecognized candidate is dropped in favour of whatever *dst
+// already held — the spec's documented behaviour ("fall back to the default
+// with a logged warning") — but logs via slog's package-level default
+// logger rather than taking a *slog.Logger parameter.
+//
+// This package deliberately holds no logger of its own: Load() has a
+// no-error, always-succeeds contract, and it's called from spots (the very
+// first config.Resolve in cmd/visor/hud.go, before any backend exists) that
+// have no logger to inject yet. slog.Default() is ambient rather than
+// dependency-injected, so both that early path and config.Watch's later
+// reloads (which the dock configures via slog.SetDefault at startup) share
+// one warning path without config importing anything backend-specific or
+// changing Load's signature.
 func setTheme(dst *string, candidate string) {
 	if _, known := render.ThemeByName(candidate); known {
 		*dst = candidate
+		return
 	}
+	slog.Warn("hud config: unknown theme name, ignoring",
+		"got", candidate, "have", strings.Join(render.Themes(), ", "), "kept", *dst)
 }
 
 // Parse reads flat key = value lines. Unknown keys, malformed lines and
