@@ -14,6 +14,7 @@ import (
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/xevent"
 
+	"github.com/nitzanz/visor/internal/hud/browse"
 	"github.com/nitzanz/visor/internal/hud/config"
 	"github.com/nitzanz/visor/internal/hud/render"
 )
@@ -56,6 +57,14 @@ type dock struct {
 	// Synthetic "help" tab pinned at slot 0; clicking it toggles helpW.
 	helpT *tab
 	helpW *helpWindow
+
+	// Armed browsing: tracker holds the interaction state (which row is open,
+	// the column bounds) and catches holds one InputOnly window per row —
+	// keyed by session id, same keys as tabs plus helpTabID — which report the
+	// cursor where the tabs' own windows cannot reach it. See
+	// internal/hud/browse and catch.go.
+	tracker *browse.Tracker
+	catches map[string]*catchWindow
 }
 
 func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
@@ -76,7 +85,14 @@ func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
 		cfg:       cfg,
 		palette:   render.Theme(cfg.Theme),
 		pinConfig: pinConfig,
+		tracker:   browse.New(browse.DisarmGrace, render.RowPitch),
+		catches:   map[string]*catchWindow{},
 	}
+	// The column's horizontal extent never changes: it is anchored to the
+	// screen edge and one tab buffer wide, which is exactly how far a tab
+	// slides when it expands. Only the row layout (SetRows, in applySnapshot)
+	// varies with the session count.
+	d.tracker.SetColumn(mon.x+mon.w-bufW, mon.x+mon.w)
 	// internal/hud/config has no logger of its own (Load/Parse must never
 	// fail, and the very first config.Resolve call in cmd/visor/hud.go runs
 	// before any dock exists), so it warns about a bad "theme = " line in
@@ -123,6 +139,10 @@ func (d *dock) close() {
 	}
 	for _, t := range d.tabs {
 		t.destroy()
+	}
+	for id, c := range d.catches {
+		c.destroy()
+		delete(d.catches, id)
 	}
 	d.X.Conn().Close()
 }
@@ -193,6 +213,12 @@ func (d *dock) run() error {
 // calling all three for every tab on every ~30Hz frame costs nothing for the
 // common case of a collapsed, non-permission tab.
 func (d *dock) animate(now time.Time) {
+	// Nothing browse-related is deferred to this tick. Every crossing this
+	// backend sees carries root coordinates, so both row swaps and the exit are
+	// decided in the event handlers the instant they arrive — see applyBrowse,
+	// onCatchMotion and wireTab's leaveFn. (browse.Tracker.Tick exists for the
+	// wlr backend, whose leave events carry no coordinates and therefore need a
+	// debounce; calling it here would be a permanent no-op.)
 	for _, t := range d.tabs {
 		t.tick(now)
 		t.tickElapsed(now)
@@ -251,6 +277,96 @@ func (d *dock) applyConfig(cfg config.Config) {
 	d.X.Sync()
 }
 
+// applyBrowse carries out a browse.Action.
+//
+// Collapse runs before Expand so a swap never has two panels open in the same
+// frame. Each of those is a single window Move — the panel is already drawn
+// into every tab's buffer (see tab.tabState, where Expanded is unconditionally
+// true), so swapping rows costs no rendering at all.
+func (d *dock) applyBrowse(a browse.Action) {
+	if a.Collapse != "" {
+		if t := d.tabByID(a.Collapse); t != nil {
+			t.setExpanded(false)
+		}
+	}
+	if a.Expand != "" {
+		if t := d.tabByID(a.Expand); t != nil {
+			t.setExpanded(true)
+		}
+	}
+	// Arm/disarm maps or unmaps every row's catch window at once: while browsing,
+	// the whole column is sensitive; at rest, none of it is.
+	switch {
+	case a.Arm:
+		for _, c := range d.catches {
+			c.show()
+		}
+	case a.Disarm:
+		for _, c := range d.catches {
+			c.hide()
+		}
+	}
+}
+
+// tabByID resolves a browse.Action's session id to a tab, including the
+// synthetic help tab — it sits in the column and browses like any other.
+func (d *dock) tabByID(id string) *tab {
+	if id == helpTabID {
+		return d.helpT
+	}
+	return d.tabs[id]
+}
+
+// wireTab installs the shared render inputs and the browse callbacks on a newly
+// created tab. Every tab needs all of this, and the help tab used to duplicate
+// it; keeping one copy is what stops the two paths drifting when a field is
+// added.
+func (d *dock) wireTab(t *tab) {
+	t.faces = d.faces
+	t.palette = d.palette
+	t.shadow = d.cfg.Shadow
+	t.tipFont = d.tipFont
+	t.hoverFn = func() {
+		d.applyBrowse(d.tracker.Hover(t.sess.ID, time.Now()))
+	}
+	t.leaveFn = func(rootX, rootY int) {
+		// Leaving this tab's window is not the same as leaving the dock. While
+		// armed, the cursor routinely crosses from the expanded tab onto the
+		// catch window (a sibling, so X reports a genuine LeaveNotify) and onto
+		// other rows' windows — the tracker keeps owning that case via the catch
+		// window's motion events. Only a crossing that lands outside the column
+		// ends the browse.
+		if d.tracker.Armed() && d.tracker.Contains(rootX, rootY) {
+			return
+		}
+		d.applyBrowse(d.tracker.Exit())
+	}
+}
+
+// wireCatch connects one row's catch window to the tracker. The row id is
+// captured here, which is the whole reason there is a window per row: entering
+// it *is* the row identification, with no coordinate hit-testing and no motion
+// events (see catch.go's type comment for why motion is unusable).
+func (d *dock) wireCatch(id string, c *catchWindow) {
+	xevent.EnterNotifyFun(func(_ *xgbutil.XUtil, ev xevent.EnterNotifyEvent) {
+		d.applyBrowse(d.tracker.Hover(id, time.Now()))
+	}).Connect(d.X, c.id)
+
+	xevent.LeaveNotifyFun(func(_ *xgbutil.XUtil, ev xevent.LeaveNotifyEvent) {
+		if ev.Detail == xproto.NotifyDetailInferior {
+			return
+		}
+		// Most crossings out of a catch window are not exits: the expanded tab
+		// is stacked above it and covers this row, so opening a panel under the
+		// cursor produces a Leave here, and so does moving to an adjacent row.
+		// Only coordinates outside the column end the browse.
+		if d.tracker.Contains(int(ev.RootX), int(ev.RootY)) {
+			return
+		}
+		d.applyBrowse(d.tracker.Exit())
+	}).Connect(d.X, c.id)
+}
+
 // makeHelpTab creates the synthetic help tab at slot 0 and wires its
 // click handler to toggle the help window.
 func (d *dock) makeHelpTab() error {
@@ -262,10 +378,7 @@ func (d *dock) makeHelpTab() error {
 		return err
 	}
 	t.sess = helpTabSession
-	t.faces = d.faces
-	t.palette = d.palette
-	t.shadow = d.cfg.Shadow
-	t.tipFont = d.tipFont
+	d.wireTab(t)
 	t.clickFn = func(button byte) {
 		// Any button toggles the help window. Using a goroutine isn't
 		// necessary here (no IPC), but X calls from the event handler are
@@ -362,9 +475,14 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		want[s.ID] = i
 	}
 
-	// Close tabs for sessions no longer present.
+	// Close tabs for sessions no longer present. A tab that vanishes while it is
+	// the one being browsed (it exited, or the user just dismissed it) has to be
+	// dropped from the tracker too, or the tracker would keep pointing at a
+	// destroyed window. Drop deliberately stays armed — the cursor has not
+	// moved and the user is still browsing.
 	for id, t := range d.tabs {
 		if _, ok := want[id]; !ok {
+			d.applyBrowse(d.tracker.Drop(id))
 			t.destroy()
 			delete(d.tabs, id)
 		}
@@ -384,17 +502,75 @@ func (d *dock) applySnapshot(snap []sessionView) {
 				continue
 			}
 			nt.sess = s
-			nt.faces = d.faces
-			nt.palette = d.palette
-			nt.shadow = d.cfg.Shadow
-			nt.tipFont = d.tipFont
+			d.wireTab(nt)
 			nt.render(time.Now()) // initial paint
 			d.tabs[s.ID] = nt
 			continue
 		}
 		t.update(s, y)
 	}
+
+	// Re-describe the column to the tracker: the help tab at slot 0 followed by
+	// the session tabs in snapshot order, matching the y positions assigned
+	// above. Row identity and order both change with the session list, and the
+	// tracker's column bounds test depends on this.
+	rows := make([]browse.Row, 0, len(snap)+1)
+	if d.helpT != nil {
+		rows = append(rows, browse.Row{ID: helpTabID, Top: d.mon.y + topMargin})
+	}
+	for i, s := range snap {
+		rows = append(rows, browse.Row{ID: s.ID, Top: d.mon.y + topMargin + (i+1)*render.RowPitch})
+	}
+	d.tracker.SetRows(rows)
+	d.syncCatches(rows)
 	d.X.Sync()
+}
+
+// syncCatches reconciles the per-row catch windows with the row layout: one
+// window per row, covering the full column width at that row's height, stacked
+// directly beneath that row's tab.
+//
+// The stacking is re-asserted on every call rather than only on creation,
+// because a tab window created later is stacked on top of everything, which
+// would otherwise leave an older catch window above it.
+func (d *dock) syncCatches(rows []browse.Row) {
+	want := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		want[r.ID] = true
+		tab := d.tabByID(r.ID)
+		if tab == nil || tab.win == nil {
+			continue // its tab failed to create; nothing to stack against
+		}
+		x, y, w, h := catchRowRect(d.mon, r.Top)
+		c, ok := d.catches[r.ID]
+		if !ok {
+			nc, err := newCatch(d.X, x, y, w, h)
+			if err != nil {
+				// Non-fatal: this row simply won't catch the cursor inland,
+				// degrading to the old edge-strip-only behaviour for that one row
+				// rather than taking the dock down.
+				d.log.Warn("catch window create failed", "id", r.ID, "err", err)
+				continue
+			}
+			d.wireCatch(r.ID, nc)
+			d.catches[r.ID] = nc
+			c = nc
+			// Created mid-browse (a session appeared while the user is
+			// browsing): it has to join the armed state or it would be a hole in
+			// the column.
+			if d.tracker.Armed() {
+				c.show()
+			}
+		}
+		c.moveResize(x, y, w, h)
+		c.stackBelow(tab.win.Id)
+	}
+	for id, c := range d.catches {
+		if !want[id] {
+			c.destroy()
+			delete(d.catches, id)
+		}
+	}
 }
 
 // bgPixel is the window background colour used until the first pixmap paint

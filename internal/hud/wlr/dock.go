@@ -9,6 +9,7 @@ import (
 
 	"codeberg.org/tesselslate/wl"
 
+	"github.com/nitzanz/visor/internal/hud/browse"
 	"github.com/nitzanz/visor/internal/hud/config"
 	"github.com/nitzanz/visor/internal/hud/render"
 	"github.com/nitzanz/visor/internal/hud/wlr/protocol"
@@ -65,6 +66,13 @@ type dock struct {
 	// pointer handles wl_pointer events (hover-expand, click-to-act).
 	// Initialised in newDock after globals are bound.
 	pointer *pointer
+
+	// tracker holds the armed-browsing interaction state; armed mirrors
+	// tracker.Armed() because layerSurface.setInputRegion is called on the
+	// repaint path and needs it without reaching back through the tracker.
+	// See internal/hud/browse.
+	tracker *browse.Tracker
+	armed   bool
 }
 
 func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
@@ -73,6 +81,10 @@ func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
 		cfg:       cfg,
 		palette:   render.Theme(cfg.Theme),
 		pinConfig: pinConfig,
+		// The row pitch is only used by the tracker's coordinate hit-testing,
+		// which this backend never exercises: the compositor reports pointer
+		// focus per surface, so rows are identified by surface identity instead.
+		tracker: browse.New(browse.DisarmGrace, render.RowPitch),
 	}
 	// internal/hud/config has no logger of its own (Load/Parse must never
 	// fail, and the very first config.Resolve call in cmd/visor/hud.go runs
@@ -323,6 +335,12 @@ func (d *dock) run(ctx context.Context) error {
 		// every ~20Hz iteration costs nothing for the common case of a
 		// collapsed, non-permission surface.
 		now := time.Now()
+
+		// Resolve the browse tracker's dwell timers. Disarm in this backend is a
+		// countdown rather than an immediate action (see browse.LeaveSurface),
+		// so it can only ever fire from here.
+		d.applyBrowse(d.tracker.Tick(now))
+
 		for _, s := range d.surfaces {
 			s.animateTick(now)
 			s.tickElapsed(now, d)
@@ -477,9 +495,48 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			if d.pointer != nil && d.pointer.focused == ls {
 				d.pointer.focused = nil
 			}
+			// Drop before destroy: if this was the row being browsed, the
+			// tracker must stop pointing at a surface that is about to go away.
+			// It stays armed on purpose — the cursor has not moved.
+			d.applyBrowse(d.tracker.Drop(id))
 			ls.destroy()
 			delete(d.surfaces, id)
 		}
+	}
+}
+
+// applyBrowse carries out a browse.Action. Collapse runs before Expand so a
+// swap never leaves two panels open in the same frame.
+//
+// Arming and disarming widen or narrow the *collapsed* surfaces' input regions.
+// The expanded one is already at full width and stays there, and repaint()
+// derives the same thing from the armed flag, so a surface that repaints for an
+// unrelated reason mid-browse keeps the right region.
+//
+// Must be called from the run() goroutine — it commits Wayland surfaces.
+func (d *dock) applyBrowse(a browse.Action) {
+	if a.Collapse != "" {
+		if s := d.surfaces[a.Collapse]; s != nil && s.state.Expanded {
+			s.state.Expanded = false
+			s.repaint(d)
+		}
+	}
+	if a.Expand != "" {
+		if s := d.surfaces[a.Expand]; s != nil && !s.state.Expanded {
+			s.state.Expanded = true
+			s.repaint(d)
+		}
+	}
+	if !a.Arm && !a.Disarm {
+		return
+	}
+	d.armed = a.Arm
+	for _, s := range d.surfaces {
+		if s.state.Expanded {
+			continue // already full width
+		}
+		s.setInputRegion(d)
+		s.surface.Commit()
 	}
 }
 

@@ -2,6 +2,7 @@ package wlr
 
 import (
 	"log/slog"
+	"time"
 
 	"codeberg.org/tesselslate/wl"
 
@@ -45,10 +46,10 @@ func (p *pointer) onEnter(_ any, _ wl.Pointer, _ uint32, surf wl.Surface, _, _ f
 		return nil
 	}
 	p.focused = ls
-	if !ls.state.Expanded {
-		ls.state.Expanded = true
-		ls.repaint(p.d)
-	}
+	// The tracker owns whether this becomes the expanded row: an enter on a row
+	// that is not already open expands it and collapses the previous one, with
+	// no delay. It also cancels any pending disarm — see onLeave.
+	p.d.applyBrowse(p.d.tracker.Hover(ls.sessionID, time.Now()))
 	return nil
 }
 
@@ -61,10 +62,12 @@ func (p *pointer) onLeave(_ any, _ wl.Pointer, _ uint32, surf wl.Surface) error 
 	if p.focused == ls {
 		p.focused = nil
 	}
-	if ls.state.Expanded {
-		ls.state.Expanded = false
-		ls.repaint(p.d)
-	}
+	// Not a collapse: the compositor tells us the pointer left this surface but
+	// not where it went, and an ordinary downward browse produces exactly this
+	// event when the cursor crosses the insensitive shadow-pad band between two
+	// rows. The tracker starts a countdown that the next Enter cancels and
+	// dock.run's tick resolves if none arrives.
+	p.d.applyBrowse(p.d.tracker.LeaveSurface(ls.sessionID, time.Now()))
 	return nil
 }
 

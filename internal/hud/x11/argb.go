@@ -207,10 +207,26 @@ func initShape(X *xgbutil.XUtil) error {
 // window-local coordinates. The BOUNDING region is left alone on purpose (see
 // the file comment): only input is shaped, so clicks on the transparent shadow
 // padding fall through to whatever is behind the tab.
+//
+// The Rectangles request is deliberately UNCHECKED, i.e. no round trip. This is
+// reachable from xevent callbacks (tab.onEnter → setExpanded), and a synchronous
+// X request from inside a callback can deadlock the whole process: the callback
+// blocks waiting for its reply, xgb's reader goroutine blocks trying to push an
+// event into its 100-slot event channel, and the only drainer of that channel is
+// the goroutine currently stuck in the callback. It is a circular wait, it hangs
+// the dock permanently (no animation, no input, no shutdown), and it is not
+// theoretical — it took down the HUD once the armed-browsing catch windows
+// started producing enough events to fill the channel. Any X request added on a
+// callback path must stay unchecked for the same reason.
+//
+// Errors instead surface asynchronously on xgb's error handler, which suits a
+// request whose failure mode is cosmetic: without the shape, the transparent
+// padding around the capsule merely eats clicks instead of passing them through.
 func setInputRegion(X *xgbutil.XUtil, win xproto.Window, rects []xproto.Rectangle) error {
 	if err := initShape(X); err != nil {
 		return err
 	}
-	return shape.RectanglesChecked(X.Conn(), shape.SoSet, shape.SkInput,
-		xproto.ClipOrderingUnsorted, win, 0, 0, rects).Check()
+	shape.Rectangles(X.Conn(), shape.SoSet, shape.SkInput,
+		xproto.ClipOrderingUnsorted, win, 0, 0, rects)
+	return nil
 }

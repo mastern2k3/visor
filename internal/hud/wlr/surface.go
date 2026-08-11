@@ -237,15 +237,37 @@ func (s *layerSurface) repaint(d *dock) {
 	// render.BufW × render.BufH, which grew when the capsule became
 	// CapsuleDrawW wide, so this must stay expressed in the constants.
 	s.surface.DamageBuffer(0, 0, int32(bufW), int32(bufH))
-	// Match input region to visible area: capsule only when collapsed,
-	// full surface when expanded so the cursor can drift onto the panel.
-	if s.state.Expanded {
-		s.surface.SetInputRegion(s.regionFull)
-	} else {
-		s.surface.SetInputRegion(s.regionTab)
-	}
+	s.setInputRegion(d)
 	s.surface.Commit()
 	s.dirty = false
+}
+
+// setInputRegion matches the sensitive area to what this surface should
+// currently catch. It does NOT commit; callers batch it with whatever else
+// they are committing.
+//
+// Collapsed and disarmed, only the capsule is sensitive — without that, the
+// compositor would fire pointer Enter as soon as the cursor crossed the
+// invisible panel area and expand the tab before the cursor reached the
+// visible strip.
+//
+// The exception is armed browsing (see internal/hud/browse). Once the user has
+// deliberately hovered one tab, every collapsed surface widens to its full
+// width so the cursor can move straight down from an open panel onto the next
+// row instead of travelling back to the screen edge. Because the surfaces
+// occupy distinct, contiguous y bands, the compositor's own pointer focus does
+// all the row hit-testing for us — this is the entire wlr side of the feature,
+// and it is why there is no counterpart to the x11 backend's catch window.
+//
+// This must consult the dock's armed flag rather than state.Expanded alone: a
+// repaint for any other reason (state change, elapsed tick, theme reload) would
+// otherwise silently narrow an armed surface back to the capsule mid-browse.
+func (s *layerSurface) setInputRegion(d *dock) {
+	if s.state.Expanded || d.armed {
+		s.surface.SetInputRegion(s.regionFull)
+		return
+	}
+	s.surface.SetInputRegion(s.regionTab)
 }
 
 // setSlot updates the surface's vertical position. Each surface commits

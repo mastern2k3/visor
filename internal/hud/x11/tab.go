@@ -133,6 +133,19 @@ type tab struct {
 	// clickFn, when non-nil, replaces the default IPC click dispatch.
 	// Used by the synthetic help tab to toggle the help window instead.
 	clickFn func(button byte)
+
+	// hoverFn/leaveFn, when non-nil, hand pointer crossings to the dock's
+	// armed-browsing tracker instead of expanding/collapsing this tab directly.
+	// The dock sets both on every tab it creates (see dock.wireTab); nil keeps
+	// the older behaviour of a tab owning its own hover state, which is what
+	// the unit tests construct.
+	//
+	// leaveFn takes root coordinates because "the cursor left this window" and
+	// "the cursor left the dock" are different questions — moving from a tab
+	// onto the sibling catch window is a real LeaveNotify that must not
+	// collapse anything.
+	hoverFn func()
+	leaveFn func(rootX, rootY int)
 }
 
 // update repositions and repaints the tab if anything changed.
@@ -317,6 +330,10 @@ func (t *tab) onButton(X *xgbutil.XUtil, ev xevent.ButtonPressEvent) {
 }
 
 func (t *tab) onEnter(X *xgbutil.XUtil, ev xevent.EnterNotifyEvent) {
+	if t.hoverFn != nil {
+		t.hoverFn()
+		return
+	}
 	t.setExpanded(true)
 }
 
@@ -325,6 +342,10 @@ func (t *tab) onLeave(X *xgbutil.XUtil, ev xevent.LeaveNotifyEvent) {
 	// Without this, the panel collapses spuriously when the cursor crosses
 	// internal sub-region boundaries (relevant once we add child widgets).
 	if ev.Detail == xproto.NotifyDetailInferior {
+		return
+	}
+	if t.leaveFn != nil {
+		t.leaveFn(int(ev.RootX), int(ev.RootY))
 		return
 	}
 	t.setExpanded(false)
@@ -450,6 +471,14 @@ func (t *tab) showTooltip() {
 		return
 	}
 	ewmh.WmWindowTypeSet(t.X, win.Id, []string{"_NET_WM_WINDOW_TYPE_TOOLTIP"})
+	// Empty input region: the tooltip must be transparent to the pointer. It is
+	// positioned in the row *above* this tab and stacked on top of everything, so
+	// with a normal input region it would swallow that row's EnterNotify and make
+	// it impossible to browse to while this tooltip is showing. A tooltip has
+	// nothing to click anyway.
+	if err := setInputRegion(t.X, win.Id, nil); err != nil {
+		slog.Warn("x11 tooltip input shape", "err", err)
+	}
 	ewmh.WmStateSet(t.X, win.Id, []string{
 		"_NET_WM_STATE_ABOVE",
 		"_NET_WM_STATE_STICKY",
