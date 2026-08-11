@@ -13,6 +13,7 @@ import (
 	"github.com/jezek/xgb/xproto"
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/xevent"
+	"github.com/jezek/xgbutil/xprop"
 
 	"github.com/nitzanz/visor/internal/hud/browse"
 	"github.com/nitzanz/visor/internal/hud/config"
@@ -402,21 +403,45 @@ func (d *dock) makeHelpTab() error {
 	return nil
 }
 
-// quit stops the X event loop. xevent.Quit only sets a flag — if the loop
-// is currently blocked inside Read waiting for the next X event, it won't
-// notice. Sending a synthetic ClientMessage to the root window wakes the
-// read so the flag is checked on the next iteration.
+// quit stops the X event loop.
+//
+// xevent.Quit only sets a flag, and xgbutil's mainEventLoop checks it just once
+// per iteration, at the top:
+//
+//	for { if Quitting(xu) { pingQuit <- ...; break }; Read(xu, true); ... }
+//
+// Read blocks in WaitForEvent, so setting the flag while the loop is parked
+// there achieves nothing on its own. Some event has to actually arrive on this
+// connection to return from Read and let the flag be seen.
+//
+// The wake therefore has to be delivered to *us*. That is what the empty event
+// mask below is for: X routes a SendEvent with no mask to the client that
+// created the destination window, regardless of what that client has selected.
+// The destination is xgbutil's own dummy window, which lives on this
+// connection.
+//
+// This used to send to the root window with EventMaskStructureNotify, which is
+// delivered only to clients that have selected StructureNotify on root — and
+// this one never has (root is used solely as a parent for CreateWindow). The
+// wake went nowhere, so SIGTERM logged "shutting down" and then hung forever,
+// leaving SIGKILL as the only way to stop the HUD and close() never running.
 func (d *dock) quit() {
 	xevent.Quit(d.X)
+
+	// A real interned atom rather than 0: nothing validates a ClientMessage's
+	// type on the way through SendEvent, but an invalid one would be a
+	// gratuitous thing to leave in a wake-up path whose failure mode is a hang.
+	wakeAtom, err := xprop.Atm(d.X, "_VISOR_WAKE")
+	if err != nil {
+		d.log.Warn("intern wake atom", "err", err)
+	}
 	wake := xproto.ClientMessageEvent{
 		Format: 32,
-		Window: d.X.RootWin(),
-		Type:   0,
+		Window: d.X.Dummy(),
+		Type:   wakeAtom,
 		Data:   xproto.ClientMessageDataUnionData32New([]uint32{0, 0, 0, 0, 0}),
 	}
-	xproto.SendEvent(d.X.Conn(), false, d.X.RootWin(),
-		uint32(xproto.EventMaskStructureNotify),
-		string(wake.Bytes()))
+	xproto.SendEvent(d.X.Conn(), false, d.X.Dummy(), 0, string(wake.Bytes()))
 	d.X.Sync()
 }
 
