@@ -1,10 +1,17 @@
-# Visor
+<p align="center">
+  <img src="docs/assets/logo.png" width="520" alt="Visor">
+</p>
 
-A cross-WM **attention HUD** for [Claude Code](https://claude.com/claude-code) sessions running on the same Linux machine.
+<h1 align="center">Visor</h1>
+
+<p align="center">
+  A cross-WM <strong>attention HUD</strong> for
+  <a href="https://claude.com/claude-code">Claude Code</a> sessions running on the same Linux machine.
+</p>
 
 A long-lived daemon watches every live Claude Code session and emits its state — `working`, `waiting on user`, or `blocked on a permission prompt` — to a small dock pinned to the right edge of your screen. One drawer ("tab") per session, color-coded by state, click to dismiss or jump. Single static Go binary.
 
-> ⚠️ Experimental, single-user project in active iteration. No test suite, no release tag, no stability promise yet.
+> ⚠️ Experimental, single-user project in active iteration. Test coverage is deliberately uneven — the pure logic (`render`, `browse`, `config`, `state`, `transcript`) is covered, the display-server and IPC wiring is not. No release tag, no stability promise yet.
 
 ## Why
 
