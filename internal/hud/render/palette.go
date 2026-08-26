@@ -147,7 +147,7 @@ func init() {
 
 	// silent — colour spent only on "a human is needed". Working, ack and
 	// dismissed are neutrals separated by luminance alone; activity is
-	// carried by the wobble and the work-bar, not hue.
+	// carried by the breathe motion and the outcome stripe, not hue.
 	register(Palette{
 		Name:       "silent",
 		Permission: StateColors{Top: 0xff8a7d, Base: 0xff4d43, Bot: 0xdd3a30, Halo: 0xff4d43, Glow: true},

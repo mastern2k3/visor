@@ -274,49 +274,6 @@ func TestDrawTab_TabRightPutsCapsuleOnRight(t *testing.T) {
 	}
 }
 
-func TestDrawTab_WorkBarRunningSegments(t *testing.T) {
-	p := silent()
-	img := DrawTab(TabState{Expanded: false, BackgroundRunning: 2}, nil, p)
-	want := rgbaOf(p.WorkRunning)
-	got := img.RGBA.RGBAAt(workSegX(0, false)+1, workBarY()+1)
-	if got.R != want.R || got.G != want.G || got.B != want.B {
-		t.Errorf("first work segment = %v, want %v", got, want)
-	}
-	// Third segment should be the "off" colour with only two running.
-	off := rgbaOf(p.WorkOff)
-	got = img.RGBA.RGBAAt(workSegX(2, false)+1, workBarY()+1)
-	if got.R != off.R || got.G != off.G || got.B != off.B {
-		t.Errorf("third work segment = %v, want off colour %v", got, off)
-	}
-}
-
-func TestDrawTab_WorkBarOutcome(t *testing.T) {
-	p := silent()
-	for _, c := range []struct {
-		outcome string
-		want    uint32
-	}{{"done", p.WorkDone}, {"failed", p.WorkFailed}} {
-		img := DrawTab(TabState{Expanded: false, BackgroundOutcome: c.outcome}, nil, p)
-		got := img.RGBA.RGBAAt(workSegX(0, false)+1, workBarY()+1)
-		want := rgbaOf(c.want)
-		if got.R != want.R || got.G != want.G || got.B != want.B {
-			t.Errorf("outcome %q segment = %v, want %v", c.outcome, got, want)
-		}
-	}
-}
-
-func TestDrawTab_NoWorkBarWhenIdle(t *testing.T) {
-	p := silent()
-	img := DrawTab(TabState{Expanded: false}, nil, p)
-	// With no background work at all, no segments are drawn — the pixel keeps
-	// the capsule gradient, which is not the off colour.
-	off := rgbaOf(p.WorkOff)
-	got := img.RGBA.RGBAAt(workSegX(0, false)+1, workBarY()+1)
-	if got.R == off.R && got.G == off.G && got.B == off.B {
-		t.Errorf("work bar drawn with no background work: %v", got)
-	}
-}
-
 func TestDrawTab_NilFacesSkipsText(t *testing.T) {
 	img := DrawTab(TabState{Expanded: true, Name: "ignored without faces"}, nil, silent())
 	if img.Overflow {
@@ -355,44 +312,94 @@ func TestDrawTab_ElapsedRendersWithoutPanic(t *testing.T) {
 	}, f, silent())
 }
 
-// TestMaxProtrusion_CoversActualWobblePeak pins the invariant that broke the
-// welded-edge illusion once already: the animation code
-// (internal/hud/x11/tab.go, internal/hud/wlr/surface.go) shifts a working
-// tab by math.Round(WobbleAmp*t01) at its peak, so MaxProtrusion — the
-// overhang CapsuleDrawW reserves off-screen — must be at least
-// AlertProtrusion + that rounded peak shift. If MaxProtrusion is ever
-// derived by truncating WobbleAmp (int(WobbleAmp)) instead of taking its
-// ceiling, this fails for any non-integer WobbleAmp: e.g. WobbleAmp=4.5
-// truncates to 4 but the animation can shift by round(4.5)=5, so the
-// capsule's drawn right edge would fall 1px short of the screen edge at the
-// wobble peak — the capsule visibly detaches from the edge, the exact
-// regression that has already cost two fix rounds.
-func TestMaxProtrusion_CoversActualWobblePeak(t *testing.T) {
-	actualPeakShift := AlertProtrusion + int(math.Round(WobbleAmp))
+// TestMaxProtrusion_CoversActualMotionPeak pins the invariant that broke the
+// welded-edge illusion once already: MotionOut shifts a tab outward by
+// math.Round(WorkBreatheAmp*t01) at its peak, so MaxProtrusion — the overhang
+// CapsuleDrawW reserves off-screen — must be at least AlertProtrusion + that
+// rounded peak. If it under-provisions, the capsule visibly detaches from the
+// screen edge at the breathe peak, which is the exact regression a user
+// reported. Guards the literal independently of how it is spelled.
+func TestMaxProtrusion_CoversActualMotionPeak(t *testing.T) {
+	actualPeakShift := AlertProtrusion + int(math.Round(max(WobbleAmp, WorkBreatheAmp)))
 	if MaxProtrusion < actualPeakShift {
-		t.Fatalf("MaxProtrusion = %d, want >= %d (AlertProtrusion + round(WobbleAmp)) — "+
+		t.Fatalf("MaxProtrusion = %d, want >= %d (AlertProtrusion + round(WorkBreatheAmp)) — "+
 			"the off-screen overhang under-provisions the actual animation peak, so the "+
-			"capsule detaches from the screen edge at the wobble peak",
+			"capsule detaches from the screen edge at the combined motion peak",
 			MaxProtrusion, actualPeakShift)
 	}
 }
 
-// TestMaxProtrusion_UnchangedAtTodaysValues locks MaxProtrusion at 12 (and
-// CapsuleDrawW at 30) for today's AlertProtrusion=8, WobbleAmp=4.0 — the
+// TestMaxProtrusion_UnchangedAtTodaysValues locks MaxProtrusion at 14 (and
+// CapsuleDrawW at 32) for today's AlertProtrusion=8 and a largest
+// animated amplitude of WorkBreatheAmp=6.0 — the
 // values the rest of the rendering code and both backends were built and
 // visually verified against. A value change here means either the geometry
 // constants moved on purpose (fine, update this test) or MaxProtrusion's
 // literal was hand-edited to something that under-provisions (caught by
-// TestMaxProtrusion_CoversActualWobblePeak above, not this test).
+// TestMaxProtrusion_CoversActualMotionPeak above, not this test).
 //
 // Deliberate exception to "tests must not hardcode 18/30/12/23/335": this
 // test's entire purpose is pinning those exact numbers, not deriving them —
 // hardcoding is the point, not an oversight.
 func TestMaxProtrusion_UnchangedAtTodaysValues(t *testing.T) {
-	if MaxProtrusion != 12 {
-		t.Errorf("MaxProtrusion = %d, want 12", MaxProtrusion)
+	if MaxProtrusion != 14 {
+		t.Errorf("MaxProtrusion = %d, want 14", MaxProtrusion)
 	}
-	if CapsuleDrawW != CapsuleW+12 {
-		t.Errorf("CapsuleDrawW = %d, want CapsuleW+12 = %d", CapsuleDrawW, CapsuleW+12)
+	if CapsuleDrawW != CapsuleW+14 {
+		t.Errorf("CapsuleDrawW = %d, want CapsuleW+14 = %d", CapsuleDrawW, CapsuleW+14)
+	}
+}
+
+// Background work is never drawn into the buffer at all — not while running,
+// not as an outcome. It drives the tab's motion (render.MotionOut) instead, so
+// a tab's pixels must be identical regardless of its background state.
+func TestDrawTab_BackgroundWorkDrawsNothing(t *testing.T) {
+	p := silent()
+	idle := DrawTab(TabState{Expanded: false}, nil, p)
+	for _, st := range []TabState{
+		{Expanded: false, BackgroundRunning: 3},
+		{Expanded: false, BackgroundOutcome: "done"},
+		{Expanded: false, BackgroundOutcome: "failed"},
+	} {
+		busy := DrawTab(st, nil, p)
+		for y := 0; y < BufH; y++ {
+			for x := 0; x < BufW; x++ {
+				if idle.RGBA.RGBAAt(x, y) != busy.RGBA.RGBAAt(x, y) {
+					t.Fatalf("pixel (%d,%d) differs for %+v: background work must not draw into the buffer, it animates the window instead", x, y, st)
+				}
+			}
+		}
+	}
+}
+
+// The wobble overrides the breathe: a working session with background work
+// running must move exactly like a plain working one, never a compound of the
+// two. Sampled across a full breathe cycle so a leaked additive term shows up
+// wherever in the cycle it would land.
+func TestMotionOut_WobbleOverridesBreathe(t *testing.T) {
+	start := time.Unix(0, 0)
+	for i := 0; i < 200; i++ {
+		now := start.Add(time.Duration(float64(i) / 200 * WorkBreathePeriod * float64(time.Second)))
+		working := MotionOut("working", 0, start, 0, now)
+		both := MotionOut("working", 3, start, 0, now)
+		if working != both {
+			t.Fatalf("at t=%v: working=%d but working+background=%d — the breathe must not add to the wobble", now.Sub(start), working, both)
+		}
+		if both > int(math.Round(WobbleAmp)) {
+			t.Fatalf("at t=%v: offset %d exceeds WobbleAmp %v", now.Sub(start), both, WobbleAmp)
+		}
+	}
+}
+
+// Background work still breathes when the session is NOT working — that is the
+// only state in which the breathe is visible at all.
+func TestMotionOut_BreatheOnlyWhenNotWorking(t *testing.T) {
+	start := time.Unix(0, 0)
+	peak := start.Add(time.Duration(WorkBreathePeriod / 2 * float64(time.Second)))
+	if got, want := MotionOut("waiting", 1, start, 0, peak), int(math.Round(WorkBreatheAmp)); got != want {
+		t.Errorf("waiting with background work at breathe peak = %d, want %d", got, want)
+	}
+	if got := MotionOut("waiting", 0, start, 0, peak); got != 0 {
+		t.Errorf("waiting with no background work = %d, want 0", got)
 	}
 }

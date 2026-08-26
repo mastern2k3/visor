@@ -14,7 +14,7 @@ import (
 const (
 	// The shm buffer is exactly the image render.DrawTab produces. It used to be
 	// tabOverflow px wider, with those columns synthesised by replicating the
-	// rightmost rendered one, so that wobble/alert shifts revealed more tab
+	// rightmost rendered one, so that breathe/alert shifts revealed more tab
 	// instead of an empty gap at the screen edge. render now owns that: the
 	// capsule is drawn CapsuleDrawW = CapsuleW + MaxProtrusion wide and the
 	// overhang lives inside BufW. Keeping both would double-count the overflow.

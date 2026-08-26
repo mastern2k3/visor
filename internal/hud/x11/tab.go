@@ -61,8 +61,6 @@ const (
 // alertProtrusion px further left than its collapsed rest position, so the
 // user can spot "you need to do something here" by shape alone.
 const (
-	wobbleAmp       = render.WobbleAmp
-	wobblePeriod    = render.WobblePeriod
 	alertProtrusion = render.AlertProtrusion
 )
 
@@ -107,16 +105,16 @@ type tab struct {
 	lastState render.TabState
 	rendered  bool
 
-	wobblePhase float64
-	wobbleStart time.Time
+	motionPhase float64
+	motionStart time.Time
 
 	// lastElapsed is the last elapsed-time string actually painted, so
 	// tickElapsed only re-renders when the visible text would change.
 	lastElapsed string
 	// lastHaloStep is the last-rendered render.HaloSteps index of the
 	// permission halo pulse, so tickHalo only re-renders when the quantised
-	// step actually advances. wobbleStart doubles as the halo's phase epoch —
-	// working (wobble) and permission (halo) are mutually exclusive states
+	// step actually advances. motionStart doubles as the halo's phase epoch —
+	// background work (breathe) and permission (halo) are independent states
 	// per Palette.For's precedence, so sharing one reference time causes no
 	// interference between the two animations.
 	lastHaloStep int
@@ -181,22 +179,18 @@ func (t *tab) restX() int {
 // tickX is the pure part of tick(): given the current time, it computes
 // where the tab's window should sit. Extracted so it can be unit-tested
 // without a live X connection — tick() itself calls into t.win.Move, which
-// needs one. Working tabs wobble leftward from rest; everything else stays
+// needs one. Working tabs wobble and tabs with background work breathe
+// leftward from rest; everything else stays
 // at rest.
 func (t *tab) tickX(now time.Time) int {
-	rest := t.restX()
-	if t.sess.Activity != "working" {
-		return rest
-	}
-	// Cosine eases naturally — zero velocity at the endpoints, max speed
-	// in the middle. (1 - cos)/2 maps to [0, 1] so the offset stays leftward.
-	elapsed := now.Sub(t.wobbleStart).Seconds()
-	t01 := (1 - math.Cos(elapsed*2*math.Pi/wobblePeriod+t.wobblePhase)) / 2
-	offset := -int(math.Round(wobbleAmp * t01))
-	return rest + offset
+	// Both oscillations live in render.MotionOut so x11 and wlr cannot drift.
+	// Offset is leftward (away from the screen edge), hence the subtraction.
+	return t.restX() - render.MotionOut(t.sess.Activity, t.sess.BackgroundRunning,
+		t.motionStart, t.motionPhase, now)
 }
 
-// tick is called by the dock's animation loop. Working tabs wobble
+// tick is called by the dock's animation loop. Working tabs wobble and
+// tabs with background work breathe
 // leftward; everything else snaps back to rest if it was previously moved.
 func (t *tab) tick(now time.Time) {
 	if t.opt.expanded {
@@ -272,8 +266,8 @@ func newTab(X *xgbutil.XUtil, mon monitor, opt tabOpts) (*tab, error) {
 		X:           X,
 		win:         win,
 		opt:         opt,
-		wobblePhase: rand.Float64() * 2 * math.Pi,
-		wobbleStart: time.Now(),
+		motionPhase: rand.Float64() * 2 * math.Pi,
+		motionStart: time.Now(),
 	}
 
 	xevent.ButtonPressFun(t.onButton).Connect(X, win.Id)
@@ -361,8 +355,8 @@ func expandedX(rightX int) int {
 }
 
 // setExpanded slides the window between its collapsed and expanded
-// positions. Width is constant (expandedW); only X changes. The wobble
-// animation also reads this state — wobble is suppressed when expanded.
+// positions. Width is constant (expandedW); only X changes. The breathe
+// animation also reads this state — motion is suppressed when expanded.
 func (t *tab) setExpanded(expand bool) {
 	if t.opt.expanded == expand {
 		return
@@ -554,7 +548,7 @@ func (t *tab) tabState(now time.Time) render.TabState {
 	if path == name {
 		path = ""
 	}
-	_, haloPhase := render.HaloPhaseStep(t.wobbleStart, now)
+	_, haloPhase := render.HaloPhaseStep(t.motionStart, now)
 	return render.TabState{
 		Activity:  t.sess.Activity,
 		Attention: t.sess.Attention,
@@ -615,7 +609,7 @@ func (t *tab) tickHalo(now time.Time) {
 	if !t.palette.For(t.sess.Activity, t.sess.Attention, t.sess.Waiting).Glow {
 		return
 	}
-	step, _ := render.HaloPhaseStep(t.wobbleStart, now)
+	step, _ := render.HaloPhaseStep(t.motionStart, now)
 	if step == t.lastHaloStep {
 		return
 	}
@@ -670,7 +664,7 @@ func (t *tab) render(now time.Time) {
 // overhang is off screen and so unclickable anyway, but including it costs
 // nothing and keeps the region correct while the tab protrudes.
 func (t *tab) inputRects() []xproto.Rectangle {
-	// render.CapsuleDrawW is a typed int (MaxProtrusion converts WobbleAmp), so
+	// render.CapsuleDrawW is a typed int (MaxProtrusion is a literal), so
 	// unlike the untyped geometry constants it needs explicit narrowing here.
 	r := []xproto.Rectangle{{
 		X: render.ShadowPad, Y: render.ShadowPad,

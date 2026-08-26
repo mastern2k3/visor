@@ -23,6 +23,15 @@ type Line struct {
 
 	Message *MessageBody `json:"message"`
 
+	// QueueContent is the top-level `content` field, which queue-operation
+	// lines use to carry a bare string. Background task-notifications land
+	// there — and sometimes ONLY there, never on a user line — so
+	// ScanBackground has to read it or the finish marker is lost and the task
+	// looks like it is still running forever. RawMessage, not string: other
+	// line types may put a non-string here and a type mismatch would fail the
+	// whole line's decode.
+	QueueContent json.RawMessage `json:"content,omitempty"`
+
 	// ai-title records (Claude auto-generated session label)
 	AiTitle string `json:"aiTitle,omitempty"`
 

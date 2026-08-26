@@ -5,9 +5,9 @@ package transcript
 type SessionActivity int
 
 const (
-	ActivityUnknown SessionActivity = iota
-	ActivityWaitingUser              // last conversation line: assistant end_turn, or real user prompt
-	ActivityWorking                  // last conversation line: assistant tool_use, or user tool_result
+	ActivityUnknown     SessionActivity = iota
+	ActivityWaitingUser                 // last conversation line: assistant end_turn, or real user prompt
+	ActivityWorking                     // last conversation line: assistant tool_use, or user tool_result
 )
 
 func (a SessionActivity) String() string {

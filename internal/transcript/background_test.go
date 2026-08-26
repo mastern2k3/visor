@@ -92,3 +92,31 @@ func escapeJSON(s string) string {
 	// strip surrounding quotes
 	return string(b[1 : len(b)-1])
 }
+
+// A finish marker on a queue-operation line must register. This is the shape
+// that leaked in practice: for some background tasks the <task-notification>
+// appears ONLY on queue-operation lines, whose text is a bare top-level
+// `content` string rather than message.content blocks. Missing it left the
+// task counted as running forever, which the HUD showed as a tab animating
+// with nothing actually running.
+func TestScanBackground_FinishOnQueueOperationLine(t *testing.T) {
+	lines := []Line{{
+		Type:         "queue-operation",
+		QueueContent: json.RawMessage(`"<task-notification>\n<task-id>bnjo0yzbs</task-id>\n<status>completed</status>\n</task-notification>"`),
+	}}
+	got := ScanBackground(lines)
+	if len(got) != 1 {
+		t.Fatalf("ScanBackground = %+v, want exactly 1 finish event", got)
+	}
+	if got[0].TaskID != "bnjo0yzbs" || got[0].Kind != BackgroundFinish || got[0].Failed {
+		t.Errorf("got %+v, want {bnjo0yzbs BackgroundFinish false}", got[0])
+	}
+}
+
+// A non-string top-level `content` must not break decoding or produce events.
+func TestScanBackground_QueueOperationNonStringContentIgnored(t *testing.T) {
+	lines := []Line{{Type: "queue-operation", QueueContent: json.RawMessage(`{"nested":"object"}`)}}
+	if got := ScanBackground(lines); len(got) != 0 {
+		t.Errorf("ScanBackground = %+v, want no events for non-string content", got)
+	}
+}

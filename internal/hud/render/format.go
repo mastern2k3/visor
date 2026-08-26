@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -99,4 +100,41 @@ func HaloPhaseStep(start, now time.Time) (step int, phase float64) {
 	step = int(elapsedNS * int64(HaloSteps) / periodNS)
 	phase = float64(step) / float64(HaloSteps)
 	return step, phase
+}
+
+// MotionOut is how many pixels a tab is currently shifted outward from its
+// resting position, away from the screen edge — the animated part only, not
+// the static AlertProtrusion an attention=needs tab already sits at.
+//
+// The two motions are mutually exclusive and the wobble wins:
+//
+//   - activity=working wobbles at WobbleAmp over the fast WobblePeriod
+//   - otherwise, background work (bgRunning > 0) breathes at WorkBreatheAmp
+//     over the slower WorkBreathePeriod
+//
+// A working session with a shell open therefore reads as plain "working" — the
+// foreground state is the more important one, and superimposing both produced a
+// compound motion that was harder to read than either alone.
+//
+// Both use (1-cos)/2, which stays in [0,1] with zero velocity at the endpoints,
+// so the tab always moves outward from rest and eases at the extremes rather
+// than snapping. Because only ever one term applies, the overhang budget needs
+// to cover max(WobbleAmp, WorkBreatheAmp), not their sum.
+//
+// The breathe is the entire background-work indicator: motion instead of
+// pixels. Window moves cost nothing and run at the full tick rate, where an
+// in-buffer indicator would be capped at HaloSteps per HaloPeriod by the cost
+// of re-rendering and re-uploading the tab.
+//
+// phase is a per-tab randomised offset so adjacent tabs do not move in
+// lockstep; it applies to the wobble only.
+func MotionOut(activity string, bgRunning int, start time.Time, phase float64, now time.Time) int {
+	elapsed := now.Sub(start).Seconds()
+	switch {
+	case activity == "working":
+		return int(math.Round(WobbleAmp * (1 - math.Cos(elapsed*2*math.Pi/WobblePeriod+phase)) / 2))
+	case bgRunning > 0:
+		return int(math.Round(WorkBreatheAmp * (1 - math.Cos(elapsed*2*math.Pi/WorkBreathePeriod)) / 2))
+	}
+	return 0
 }

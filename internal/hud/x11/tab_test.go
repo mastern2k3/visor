@@ -12,7 +12,7 @@ import (
 // must never fall short of the screen edge (rightX), in any state. This is
 // pure integer geometry — no X connection needed — but nothing asserted it
 // before, and it is exactly the arithmetic that regressed once already (see
-// the wobble/MaxProtrusion fix in internal/hud/render/tab.go).
+// the breathe/MaxProtrusion budget in internal/hud/render/tab.go).
 
 // weldedEdge is the invariant itself: for a tab resting at restX(), the
 // capsule is drawn render.CapsuleDrawW wide starting at
@@ -63,71 +63,72 @@ func TestExpandedX_PanelRightEdgeAtScreenEdge(t *testing.T) {
 	}
 }
 
-// peakTab returns a *tab plus the "now" time at which its wobble term is at
-// its peak (t01 == 1) — deterministically, with no time.Sleep. wobblePhase
-// is fixed at 0, so the peak (cos argument == pi) falls at
-// elapsed == wobblePeriod/2 seconds after wobbleStart. Mirrors peakSurface
-// in internal/hud/wlr/surface_test.go.
-func peakTab(rightX int, attention, activity string) (tb *tab, peakNow time.Time) {
+// peakTab returns a *tab plus the "now" at which its breathe term peaks
+// (t01 == 1) — deterministically, with no time.Sleep. motionPhase is fixed at
+// 0, so (1-cos)/2 peaks at half the period. The breathe is the larger of the
+// two motions and the two never apply together (the wobble overrides), so this
+// is the widest excursion the geometry has to survive. Mirrors peakSurface in
+// internal/hud/wlr/surface_test.go.
+func peakTab(rightX int, attention, activity string, bgRunning int) (tb *tab, peakNow time.Time) {
 	start := time.Unix(0, 0)
-	now := start.Add(time.Duration(wobblePeriod / 2 * float64(time.Second)))
+	now := start.Add(time.Duration(render.WorkBreathePeriod / 2 * float64(time.Second)))
 	tb = &tab{
 		opt:         tabOpts{rightX: rightX},
-		sess:        sessionView{Attention: attention, Activity: activity},
-		wobbleStart: start,
-		wobblePhase: 0,
+		sess:        sessionView{Attention: attention, Activity: activity, BackgroundRunning: bgRunning},
+		motionStart: start,
+		motionPhase: 0,
 	}
 	return tb, now
 }
 
-// TestTickX_NotWorking_MatchesRestX pins that a non-working tab's animated
-// position is just its rest position — tickX must not apply any wobble
-// offset when Activity != "working".
-func TestTickX_NotWorking_MatchesRestX(t *testing.T) {
-	tb := &tab{opt: tabOpts{rightX: 2560}, sess: sessionView{Activity: "waiting"}}
-	if got, want := tb.tickX(time.Now()), tb.restX(); got != want {
-		t.Errorf("tickX() = %d, want restX() = %d for a non-working tab", got, want)
+// An idle tab with no background work must sit perfectly still at rest.
+func TestTickX_IdleAndNoBackgroundWork_MatchesRestX(t *testing.T) {
+	for _, activity := range []string{"waiting", "unknown"} {
+		tb := &tab{opt: tabOpts{rightX: 2560}, sess: sessionView{Activity: activity}}
+		if got, want := tb.tickX(time.Now()), tb.restX(); got != want {
+			t.Errorf("activity=%q with no background work: tickX() = %d, want restX() = %d", activity, got, want)
+		}
 	}
 }
 
-// TestTickX_WorkingAtWobblePeak_CapsuleReachesScreenEdge exercises tick()'s
-// pure wobble-offset computation (tickX) directly, mirroring
-// computeRightMargin's peak-phase test on the wlr side. This code path had
-// no test coverage at all before — the wlr backend's equivalent
-// (computeRightMargin) did, x11's tick() did not, despite both applying the
-// identical math.Round-based wobble.
-func TestTickX_WorkingAtWobblePeak_CapsuleReachesScreenEdge(t *testing.T) {
-	tb, now := peakTab(2560, "", "working")
+// A working tab with background work must move like a plain working tab: the
+// wobble overrides the breathe, so the two never compound.
+func TestTickX_WorkingOverridesBackgroundBreathe(t *testing.T) {
+	tb, now := peakTab(2560, "", "working", 3)
+	plain, _ := peakTab(2560, "", "working", 0)
+	if got, want := tb.tickX(now), plain.tickX(now); got != want {
+		t.Errorf("working+background tickX() = %d, want %d (same as working alone — the wobble overrides)", got, want)
+	}
+}
 
-	// Sanity-check we actually hit the peak: at t01=1 the offset should equal
-	// -round(wobbleAmp), matching tickX's own math.
-	wantOffset := -int(math.Round(wobbleAmp))
-	wantX := tb.restX() + wantOffset
+// TestTickX_BackgroundWorkAtBreathePeak_CapsuleReachesScreenEdge exercises the
+// pure breathe-offset computation directly.
+func TestTickX_BackgroundWorkAtBreathePeak_CapsuleReachesScreenEdge(t *testing.T) {
+	tb, now := peakTab(2560, "", "waiting", 1)
+
+	// Sanity-check we hit the breathe peak: at t01=1 the offset equals
+	// -round(WorkBreatheAmp), matching MotionOut.
+	wantX := tb.restX() - int(math.Round(render.WorkBreatheAmp))
 	gotX := tb.tickX(now)
 	if gotX != wantX {
-		t.Fatalf("did not land on the wobble peak: tickX() = %d, want %d (deterministic phase setup is broken, not just the invariant)", gotX, wantX)
+		t.Fatalf("did not land on the breathe peak: tickX() = %d, want %d (deterministic phase setup is broken, not just the invariant)", gotX, wantX)
 	}
-
 	if got := gotX + render.ShadowPad + render.CapsuleDrawW; got < tb.opt.rightX {
 		t.Errorf("capsule detached from screen edge: tickX()+ShadowPad+CapsuleDrawW = %d, want >= rightX = %d", got, tb.opt.rightX)
 	}
 }
 
-// TestTickX_NeedsAndWorkingAtWobblePeak_MarginExactlyZero covers the tightest
-// point in the whole system: a tab that is both attention=needs (so restX
-// already sits AlertProtrusion further out) AND working at its wobble peak
-// (so the wobble adds its full round(WobbleAmp) further still). By
-// construction (MaxProtrusion == AlertProtrusion + round(WobbleAmp) at
-// today's values) the capsule's drawn right edge lands exactly on the
-// screen edge here — zero slack in either direction. If MaxProtrusion ever
-// under-provisions relative to the real animation peak, this is the combined
-// state where the capsule detaches first.
-func TestTickX_NeedsAndWorkingAtWobblePeak_MarginExactlyZero(t *testing.T) {
-	tb, now := peakTab(2560, "needs", "working")
+// The tightest point in the whole system: attention=needs (restX already sits
+// AlertProtrusion out) plus the LARGER of the two motions, the breathe, at its
+// peak. By construction (MaxProtrusion == AlertProtrusion +
+// round(max(WobbleAmp, WorkBreatheAmp))) the capsule's drawn right edge lands
+// exactly on the screen edge — zero slack either way.
+func TestTickX_NeedsAndBackgroundAtPeak_MarginExactlyZero(t *testing.T) {
+	tb, now := peakTab(2560, "needs", "waiting", 2)
 
 	got := tb.tickX(now) + render.ShadowPad + render.CapsuleDrawW
 	if got != tb.opt.rightX {
-		t.Errorf("needs+working-at-peak capsule edge = %d, want exactly rightX = %d (this is the system's tightest margin — any deviation means either a gap or an overshoot)", got, tb.opt.rightX)
+		t.Errorf("needs+background-at-peak capsule edge = %d, want exactly rightX = %d (this is the system's tightest margin — any deviation means either a gap or an overshoot)", got, tb.opt.rightX)
 	}
 }
 

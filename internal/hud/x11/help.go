@@ -63,6 +63,7 @@ func helpContent(p render.Palette) []helpRow {
 		{heading: true, label: "Behavior"},
 		{indent: true, label: "hover a tab to see its working dir"},
 		{indent: true, label: "busy sessions wobble"},
+		{indent: true, label: "background work breathes (slower)"},
 		{label: ""},
 		{label: "(click anywhere to close)"},
 	}

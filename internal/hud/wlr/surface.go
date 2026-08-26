@@ -23,14 +23,12 @@ const (
 	// cosine easing, each with a randomized phase so adjacent tabs don't pulse
 	// in lockstep. A session with attention=needs sits alertProtrusion px
 	// further from the right edge so it's distinguishable by shape alone.
-	wobbleAmp       = render.WobbleAmp
-	wobblePeriod    = render.WobblePeriod
 	alertProtrusion = render.AlertProtrusion
 
 	// tabOverflow is how many pixels the surface extends past the screen's
 	// right edge at the rest position, so that even at peak shift (alert +
-	// wobble) the capsule's right edge is still flush with or beyond the screen
-	// edge — wobble/alert always grow the visible tab leftward instead of
+	// breathe) the capsule's right edge is still flush with or beyond the screen
+	// edge — breathe/alert always grow the visible tab leftward instead of
 	// revealing empty space.
 	//
 	// It is exactly render.MaxProtrusion, which is also the amount by which
@@ -58,14 +56,15 @@ type layerSurface struct {
 	// Raw daemon state needed to drive animation. Kept alongside the rendered
 	// TabState so the renderer stays pure.
 	activity  string
+	bgRunning int
 	attention string
 
 	// Slot and current applied right margin (in px from the screen edge). Tracked
 	// so the animation tick can detect changes and avoid unnecessary commits.
 	slot        int
 	rightMargin int32
-	wobbleStart time.Time
-	wobblePhase float64
+	motionStart time.Time
+	motionPhase float64
 
 	// stateSince is the raw daemon timestamp state.Elapsed was last derived
 	// from. Kept separately from state.Elapsed (which is a computed,
@@ -77,8 +76,8 @@ type layerSurface struct {
 	lastElapsed string
 	// lastHaloStep is the last-painted render.HaloSteps index of the
 	// permission halo pulse, so tickHalo only repaints when the quantised
-	// step actually advances. wobbleStart doubles as the halo's phase epoch —
-	// working (wobble) and permission (halo) are mutually exclusive states
+	// step actually advances. motionStart doubles as the halo's phase epoch —
+	// background work (breathe) and permission (halo) are independent states
 	// per Palette.For's precedence, so sharing one reference time causes no
 	// interference between the two animations.
 	lastHaloStep int
@@ -158,6 +157,7 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 		state:       st,
 		sessionID:   id,
 		activity:    activity,
+		bgRunning:   st.BackgroundRunning,
 		attention:   attention,
 		log:         d.log,
 		d:           d,
@@ -165,8 +165,8 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 		regionFull:  regionFull,
 		slot:        slot,
 		rightMargin: initialRight,
-		wobbleStart: time.Now(),
-		wobblePhase: rand.Float64() * 2 * math.Pi,
+		motionStart: time.Now(),
+		motionPhase: rand.Float64() * 2 * math.Pi,
 	}
 
 	// Start with the tab-only input region — newly-created surfaces are
@@ -297,27 +297,25 @@ func (s *layerSurface) animateTick(now time.Time) bool {
 // computeRightMargin returns the right-margin (in protocol units — positive
 // values push the surface away from the right anchor, negative push it past).
 // Starts at -tabOverflow (surface overflows the screen edge) and moves
-// rightward (toward the screen edge) as alert/wobble shifts grow. Because the
+// rightward (toward the screen edge) as alert/breathe shifts grow. Because the
 // capsule is drawn CapsuleDrawW = CapsuleW + tabOverflow wide, the visible
 // capsule width is CapsuleDrawW plus this margin, and its right edge is welded
 // to the screen edge throughout:
 //
 //	rest:        -tabOverflow                 → visible width = CapsuleW
 //	needs:       -tabOverflow + alertProtrusion → CapsuleW + alertProtrusion
-//	working:     adds cosine-eased wobble [0, wobbleAmp] on top of base;
+//	working:     adds cosine-eased wobble [0, WobbleAmp] on top of base;
+//	bg work:     adds cosine-eased breathe [0, WorkBreatheAmp] on top of that;
 //	             at the peak the margin reaches 0 and the full CapsuleDrawW shows
 func (s *layerSurface) computeRightMargin(now time.Time) int32 {
 	base := -int32(tabOverflow)
 	if s.attention == "needs" {
 		base += alertProtrusion
 	}
-	if s.activity == "working" {
-		elapsed := now.Sub(s.wobbleStart).Seconds()
-		// (1 - cos)/2 maps to [0, 1] with zero derivative at the endpoints.
-		t01 := (1 - math.Cos(elapsed*2*math.Pi/wobblePeriod+s.wobblePhase)) / 2
-		return base + int32(math.Round(wobbleAmp*t01))
-	}
-	return base
+	// Positive margin moves the surface toward the screen edge, so the
+	// outward motion adds. Shared with x11 via render.MotionOut.
+	return base + int32(render.MotionOut(s.activity, s.bgRunning,
+		s.motionStart, s.motionPhase, now))
 }
 
 // stateElapsed/elapsedChanged/haloPhaseStep used to live here, duplicated
@@ -354,7 +352,7 @@ func (s *layerSurface) tickHalo(now time.Time, d *dock) {
 	if !d.palette.For(s.state.Activity, s.state.Attention, s.state.Waiting).Glow {
 		return
 	}
-	step, phase := render.HaloPhaseStep(s.wobbleStart, now)
+	step, phase := render.HaloPhaseStep(s.motionStart, now)
 	if step == s.lastHaloStep {
 		return
 	}

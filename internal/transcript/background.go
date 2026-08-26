@@ -62,12 +62,24 @@ func toolResultText(b Block) string {
 // lifecycle events found in user-line content. Both markers live inside
 // user-line content blocks, so we decode content the same way Classify does.
 //
-// A <task-notification> can appear in the JSONL twice (a queue-operation line
-// and a user line); only the user line is inspected here, and callers key
-// events by TaskID into a set so a duplicate finish is a harmless no-op.
+// A <task-notification> can land on a user line, on a queue-operation line, or
+// on BOTH — and for some tasks only on the queue-operation line, so both are
+// inspected. Callers key events by TaskID into a set, so seeing the same finish
+// twice is a harmless no-op; missing it entirely is not, and leaves the task
+// looking like it is still running forever.
 func ScanBackground(lines []Line) []BackgroundEvent {
 	var out []BackgroundEvent
 	for _, ln := range lines {
+		// queue-operation lines carry the notification as a bare top-level
+		// string. This is the only place some finishes appear at all, so
+		// skipping them leaks the task as permanently "running".
+		if ln.Type == "queue-operation" {
+			var text string
+			if json.Unmarshal(ln.QueueContent, &text) == nil {
+				out = append(out, finishEvents(text)...)
+			}
+			continue
+		}
 		if ln.Type != "user" || ln.Message == nil {
 			continue
 		}
@@ -86,18 +98,31 @@ func ScanBackground(lines []Line) []BackgroundEvent {
 				out = append(out, BackgroundEvent{TaskID: strings.TrimSpace(m[1]), Kind: BackgroundStart})
 				continue
 			}
-			// Fix 2: find ALL task-notification blocks in the text.
-			ids := taskIDRe.FindAllStringSubmatch(text, -1)
-			statuses := statusRe.FindAllStringSubmatch(text, -1)
-			for i, id := range ids {
-				taskID := strings.TrimSpace(id[1]) // Fix 4: trim captured groups
-				failed := true
-				if i < len(statuses) && strings.TrimSpace(statuses[i][1]) == "completed" {
-					failed = false
-				}
-				out = append(out, BackgroundEvent{TaskID: taskID, Kind: BackgroundFinish, Failed: failed})
-			}
+			out = append(out, finishEvents(text)...)
 		}
+	}
+	return out
+}
+
+// finishEvents extracts every <task-notification> finish marker in text. A
+// single blob can hold more than one, and the status decides Failed.
+func finishEvents(text string) []BackgroundEvent {
+	ids := taskIDRe.FindAllStringSubmatch(text, -1)
+	if ids == nil {
+		return nil
+	}
+	statuses := statusRe.FindAllStringSubmatch(text, -1)
+	out := make([]BackgroundEvent, 0, len(ids))
+	for i, id := range ids {
+		failed := true
+		if i < len(statuses) && strings.TrimSpace(statuses[i][1]) == "completed" {
+			failed = false
+		}
+		out = append(out, BackgroundEvent{
+			TaskID: strings.TrimSpace(id[1]),
+			Kind:   BackgroundFinish,
+			Failed: failed,
+		})
 	}
 	return out
 }

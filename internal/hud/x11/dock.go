@@ -182,7 +182,7 @@ func (d *dock) run() error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
-	// ~30 Hz animation tick — smooth enough for wobble easing, low overhead
+	// ~30 Hz animation tick — smooth enough for breathe easing, low overhead
 	// (xgb's Move requests are tiny; the X server applies them in batch).
 	anim := time.NewTicker(33 * time.Millisecond)
 	defer anim.Stop()
@@ -207,7 +207,7 @@ func (d *dock) run() error {
 	}
 }
 
-// animate ticks each tab's animation state: position wobble, the once-a-
+// animate ticks each tab's animation state: position breathe, the once-a-
 // second elapsed-label refresh on expanded tabs, and the permission halo
 // pulse. tick/tickElapsed/tickHalo are each individually cheap no-ops when
 // their state doesn't apply (not working / not hovered / not glowing), so
@@ -225,7 +225,7 @@ func (d *dock) animate(now time.Time) {
 		t.tickElapsed(now)
 		t.tickHalo(now)
 	}
-	// The help tab doesn't wobble (it's not a session) but tick()/tickElapsed/
+	// The help tab never moves (it's not a session) but tick()/tickElapsed/
 	// tickHalo are no-ops for it, so calling them is harmless.
 	if d.helpT != nil {
 		d.helpT.tick(now)

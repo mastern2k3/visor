@@ -23,18 +23,20 @@ const (
 	ShadowPad = 5
 
 	// MaxProtrusion is the furthest a tab is ever shifted away from the screen
-	// edge: an attention=needs tab sits AlertProtrusion out, and a working tab
-	// wobbles up to WobbleAmp further. Defined once here; the wlr backend's
-	// surface overflow is an alias of it.
+	// edge: an attention=needs tab sits AlertProtrusion out, and on top of that
+	// EITHER a working tab wobbles up to WobbleAmp, or a tab with background
+	// work breathes up to WorkBreatheAmp — never both, the wobble overrides.
+	// So the budget covers the larger of the two, not their sum.
+	// Defined once here; the wlr backend's surface overflow is an alias of it.
 	//
 	// Plain literal, not a derived expression: it must satisfy
-	// MaxProtrusion >= AlertProtrusion + round(WobbleAmp) (the animation code
-	// applies the wobble via math.Round, not truncation), and
-	// TestMaxProtrusion_CoversActualWobblePeak in tab_test.go enforces that
+	// MaxProtrusion >= AlertProtrusion + round(max(WobbleAmp, WorkBreatheAmp))
+	// (MotionOut rounds rather than truncates), and
+	// TestMaxProtrusion_CoversActualMotionPeak in tab_test.go enforces that
 	// invariant directly, independent of how this literal is spelled. Update
-	// this value by hand if AlertProtrusion or WobbleAmp change; the test
-	// fails loudly if the new value under-provisions.
-	MaxProtrusion = 12
+	// this value by hand if AlertProtrusion, WobbleAmp or WorkBreatheAmp
+	// change; the test fails loudly if the new value under-provisions.
+	MaxProtrusion = 14
 	// CapsuleDrawW is how wide the capsule is actually *drawn*. It is
 	// MaxProtrusion wider than the visible width so that the extra hangs off
 	// the screen edge at rest: protruding or wobbling then reveals more capsule
@@ -67,12 +69,24 @@ const (
 
 	// AlertProtrusion: an attention=needs tab sits this many px further from
 	// the screen edge, so it is distinguishable by shape alone. Chosen >
-	// WobbleAmp so a needs tab is unambiguously further out than any working
-	// tab at its wobble peak.
+	// WobbleAmp and > WorkBreatheAmp - 2 so a needs tab is unambiguously
+	// further out than an animated one at its peak.
 	AlertProtrusion = 8
-	// Wobble animation for working tabs.
+
+	// Wobble animation for working tabs: a fast, small twitch that says the
+	// model is busy. Distinct in tempo from the background-work breathe below.
 	WobbleAmp    = 4.0
 	WobblePeriod = 0.9
+
+	// Background work is signalled by MOTION, not by pixels: the tab swells
+	// outward from the screen edge and back while any background work runs.
+	// Window moves are free (pure win.Move / SetMargin) and smooth at the full
+	// tick rate, where anything drawn is capped at HaloSteps per HaloPeriod
+	// (~5fps) by the re-render cost. Slower and larger than the wobble so the
+	// two read as clearly different motions — they never appear together (the
+	// wobble overrides), but a session alternates between them over its life.
+	WorkBreatheAmp    = 6.0
+	WorkBreathePeriod = 2.7
 
 	// HaloPeriod is the permission halo's full pulse cycle length in seconds.
 	HaloPeriod = 1.6
@@ -92,11 +106,6 @@ const (
 
 	// Work-bar: a segmented strip along the capsule's bottom inside edge,
 	// replacing the old stacked dots which cramped at this width.
-	workSegs   = 3
-	workBarH   = 2
-	workInset  = 3
-	workGap    = 2
-	workBottom = 3 // px from the capsule's bottom edge to the bar
 
 	// Text layout inside the panel.
 	textPad      = 12 // x offset from the panel's inner edge to the text
@@ -185,22 +194,7 @@ func cornerRadius(s TabState) float64 {
 	return Radius
 }
 
-// workBarY is the buffer y of the work bar's top edge.
-func workBarY() int {
-	return ShadowPad + ContentH - workBottom - workBarH
-}
-
-// workSegX is the buffer x of segment i's left edge.
-func workSegX(i int, tabRight bool) int {
-	return capsuleX(tabRight) + workInset + i*(workSegW()+workGap)
-}
-
 // workSegW divides the *visible-at-rest* CapsuleW, not CapsuleDrawW: the bar
-// has to be readable at rest, when everything past CapsuleW is off screen.
-func workSegW() int {
-	avail := CapsuleW - 2*workInset - (workSegs-1)*workGap
-	return avail / workSegs
-}
 
 // clipTo runs fn with all drawing clipped to r.
 //
@@ -308,7 +302,6 @@ func DrawTab(s TabState, f *Faces, p Palette) TabImage {
 	})
 
 	// --- work bar ---------------------------------------------------------
-	drawWorkBar(dc, s, p)
 
 	overflow := false
 	if f != nil {
@@ -392,41 +385,6 @@ func drawPanelText(dc *gg.Context, s TabState, f *Faces, p Palette) (overflow bo
 		}
 	})
 	return overflow
-}
-
-// drawWorkBar paints the segmented background-work indicator. Running work
-// fills that many segments; otherwise a single segment carries the outcome.
-// Nothing is drawn when there is neither.
-//
-// Segments are plain rectangles: at workSegW x workBarH (2x2 px) a corner
-// radius would cover each pixel only partially, so the segment colour would
-// arrive on screen blended with the capsule gradient underneath instead of as
-// itself.
-func drawWorkBar(dc *gg.Context, s TabState, p Palette) {
-	var fill uint32
-	n := 0
-	switch {
-	case s.BackgroundRunning > 0:
-		n = min(s.BackgroundRunning, workSegs)
-		fill = p.WorkRunning
-	case s.BackgroundOutcome == "done":
-		n, fill = 1, p.WorkDone
-	case s.BackgroundOutcome == "failed":
-		n, fill = 1, p.WorkFailed
-	default:
-		return
-	}
-	y := float64(workBarY())
-	segW := float64(workSegW())
-	for i := 0; i < workSegs; i++ {
-		c := p.WorkOff
-		if i < n {
-			c = fill
-		}
-		dc.DrawRectangle(float64(workSegX(i, s.TabRight)), y, segW, workBarH)
-		dc.SetColor(rgbaOf(c))
-		dc.Fill()
-	}
 }
 
 // drawShadow paints a blurred dark shape offset 1px down, behind whatever is

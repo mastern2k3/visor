@@ -328,7 +328,7 @@ func (d *dock) run(ctx context.Context) error {
 			}
 		}
 
-		// Animation tick: working tabs wobble, needs tabs protrude, expanded
+		// Animation tick: background work breathes, needs tabs protrude, expanded
 		// tabs' elapsed label ticks over once a second, and permission tabs
 		// pulse their halo. Each of these is an independent cheap no-op when
 		// its state doesn't apply, so calling all three for every surface on
@@ -432,7 +432,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		// would defeat itself and every broadcast would force a repaint
 		// regardless of whether anything about this surface actually
 		// changed. HaloPhase is filled in per-branch below: it is quantised
-		// against the surface's own wobbleStart (the same epoch tickHalo
+		// against the surface's own motionStart (the same epoch tickHalo
 		// uses), which does not exist yet for a surface not yet created.
 		st := render.TabState{
 			Activity:          s.Activity,
@@ -449,11 +449,11 @@ func (d *dock) applySnapshot(snap []sessionView) {
 		}
 		if ls, ok := d.surfaces[s.ID]; ok {
 			st.Expanded = ls.state.Expanded // preserve hover state across snapshot updates
-			// Use the surface's own wobbleStart as the halo epoch — the same
+			// Use the surface's own motionStart as the halo epoch — the same
 			// one tickHalo will use on the next animation tick — so the
 			// phase baked in here and the phase tickHalo advances from later
 			// never disagree.
-			_, haloPhase := render.HaloPhaseStep(ls.wobbleStart, now)
+			_, haloPhase := render.HaloPhaseStep(ls.motionStart, now)
 			st.HaloPhase = haloPhase
 			if ls.state != st {
 				ls.state = st
@@ -461,15 +461,16 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			}
 			// Update animation-relevant fields; the next tick picks up changes.
 			ls.activity = s.Activity
+			ls.bgRunning = s.BackgroundRunning
 			ls.attention = s.Attention
 			ls.stateSince = s.StateSince
 			ls.lastElapsed = render.ElapsedString(st.Elapsed)
-			step, _ := render.HaloPhaseStep(ls.wobbleStart, now)
+			step, _ := render.HaloPhaseStep(ls.motionStart, now)
 			ls.lastHaloStep = step
 			// Re-stack: slot may have changed.
 			ls.setSlot(slot)
 		} else {
-			// st.HaloPhase stays at its zero value: wobbleStart is only
+			// st.HaloPhase stays at its zero value: motionStart is only
 			// assigned inside newLayerSurface below, so there is no epoch to
 			// quantise against yet. The very next animation tick (tickHalo)
 			// corrects it to the real phase, well within the ~50ms idle-poll
@@ -482,7 +483,7 @@ func (d *dock) applySnapshot(snap []sessionView) {
 			}
 			ls.stateSince = s.StateSince
 			ls.lastElapsed = render.ElapsedString(st.Elapsed)
-			step, _ := render.HaloPhaseStep(ls.wobbleStart, now)
+			step, _ := render.HaloPhaseStep(ls.motionStart, now)
 			ls.lastHaloStep = step
 			d.surfaces[s.ID] = ls
 		}

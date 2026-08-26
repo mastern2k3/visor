@@ -12,7 +12,7 @@ import (
 // capsule's drawn right edge must never fall short of the screen edge, in
 // any state. layerSurface.computeRightMargin is pure integer/float geometry —
 // no Wayland compositor needed — but nothing asserted it before, and this is
-// exactly the arithmetic that regressed once already (see the wobble/
+// exactly the arithmetic that regressed once already (see the breathe/
 // MaxProtrusion fix in internal/hud/render/tab.go).
 //
 // A margin of 0 puts the surface's right edge exactly at the screen edge; a
@@ -27,75 +27,74 @@ func TestTabOverflow_EqualsRenderMaxProtrusion(t *testing.T) {
 	}
 }
 
-// peakSurface returns a layerSurface plus the "now" time at which its
-// wobble term is at its peak (t01 == 1) — deterministically, with no
-// time.Sleep. wobblePhase is fixed at 0, so the peak (cos argument == pi)
-// falls at elapsed == wobblePeriod/2 seconds after wobbleStart.
-func peakSurface(activity, attention string) (s *layerSurface, peakNow time.Time) {
+// peakSurface returns a *layerSurface plus the "now" at which its breathe term
+// is at its peak (t01 == 1) — deterministically, with no time.Sleep.
+// motionPhase is fixed at 0, so the (1-cos)/2 peak falls at
+// WorkBreathePeriod/2 after motionStart. Mirrors peakTab in
+// internal/hud/x11/tab_test.go.
+func peakSurface(activity, attention string, bgRunning int) (s *layerSurface, peakNow time.Time) {
 	start := time.Unix(0, 0)
-	now := start.Add(time.Duration(render.WobblePeriod / 2 * float64(time.Second)))
+	now := start.Add(time.Duration(render.WorkBreathePeriod / 2 * float64(time.Second)))
 	return &layerSurface{
 		activity:    activity,
 		attention:   attention,
-		wobbleStart: start,
-		wobblePhase: 0,
+		bgRunning:   bgRunning,
+		motionStart: start,
+		motionPhase: 0,
 		slot:        0,
 	}, now
 }
 
-func TestComputeRightMargin_Rest_CapsuleReachesScreenEdge(t *testing.T) {
-	s := &layerSurface{activity: "waiting", attention: "ack", wobbleStart: time.Now()}
-	margin := s.computeRightMargin(time.Now())
-	assertWeldedAndBounded(t, "rest", margin)
-}
-
-func TestComputeRightMargin_Needs_CapsuleReachesScreenEdge(t *testing.T) {
-	s := &layerSurface{activity: "waiting", attention: "needs", wobbleStart: time.Now()}
-	margin := s.computeRightMargin(time.Now())
-	assertWeldedAndBounded(t, "needs", margin)
-}
-
-func TestComputeRightMargin_WorkingAtWobblePeak_CapsuleReachesScreenEdge(t *testing.T) {
-	s, now := peakSurface("working", "ack")
-	margin := s.computeRightMargin(now)
-
-	// Sanity-check we actually hit the peak: at t01=1 the working delta should
-	// equal round(wobbleAmp), matching computeRightMargin's own math.
-	wantDelta := int32(math.Round(wobbleAmp))
-	wantMargin := -int32(tabOverflow) + wantDelta
-	if margin != wantMargin {
-		t.Fatalf("did not land on the wobble peak: margin = %d, want %d (deterministic phase setup is broken, not just the invariant)", margin, wantMargin)
+// An idle surface with no background work stays at rest.
+func TestComputeRightMargin_IdleAndNoBackgroundWork_RestOnly(t *testing.T) {
+	for _, activity := range []string{"waiting", "unknown"} {
+		s := &layerSurface{activity: activity, motionStart: time.Unix(0, 0)}
+		if got, want := s.computeRightMargin(time.Now()), -int32(tabOverflow); got != want {
+			t.Errorf("activity=%q with no background work: margin = %d, want %d — only background work may move a surface", activity, got, want)
+		}
 	}
-	assertWeldedAndBounded(t, "working at wobble peak", margin)
 }
 
-// TestComputeRightMargin_NeedsAndWorkingAtWobblePeak_MarginExactlyZero covers
-// the tightest point in the whole system: a surface that is both
-// attention=needs (base already shifted in by alertProtrusion) AND working at
-// its wobble peak (round(wobbleAmp) added on top). By construction
-// (tabOverflow == render.MaxProtrusion == AlertProtrusion + round(WobbleAmp)
-// at today's values) the margin lands at exactly 0 here — the surface's right
-// edge sits exactly on the screen edge, with zero slack in either direction.
-// x11 has the equivalent case (internal/hud/x11/tab_test.go,
-// TestTickX_NeedsAndWorkingAtWobblePeak_MarginExactlyZero); wlr is the
-// backend that has never run on real hardware, so it is the one that least
-// deserves weaker coverage of the state that would first reveal a detached
-// or overshooting capsule.
-func TestComputeRightMargin_NeedsAndWorkingAtWobblePeak_MarginExactlyZero(t *testing.T) {
-	s, now := peakSurface("working", "needs")
+// Background work moves a non-working surface; a working one wobbles instead
+// (the wobble overrides), so the two never compound.
+func TestComputeRightMargin_BackgroundWorkWhileWaiting_Moves(t *testing.T) {
+	s, now := peakSurface("waiting", "ack", 1)
+	if got, want := s.computeRightMargin(now), -int32(tabOverflow)+int32(math.Round(render.WorkBreatheAmp)); got != want {
+		t.Errorf("waiting surface with background work: margin = %d, want %d", got, want)
+	}
+}
+
+func TestComputeRightMargin_WorkingOverridesBackgroundBreathe(t *testing.T) {
+	both, now := peakSurface("working", "ack", 3)
+	plain, _ := peakSurface("working", "ack", 0)
+	if got, want := both.computeRightMargin(now), plain.computeRightMargin(now); got != want {
+		t.Errorf("working+background margin = %d, want %d (same as working alone)", got, want)
+	}
+}
+
+func TestComputeRightMargin_BackgroundWorkAtBreathePeak_CapsuleReachesScreenEdge(t *testing.T) {
+	s, now := peakSurface("waiting", "ack", 1)
 	margin := s.computeRightMargin(now)
 
-	// Sanity-check we actually hit the peak with attention folded in: base
-	// (-tabOverflow + alertProtrusion) plus the wobble peak delta.
-	wantDelta := int32(math.Round(wobbleAmp))
-	wantMargin := -int32(tabOverflow) + alertProtrusion + wantDelta
+	wantMargin := -int32(tabOverflow) + int32(math.Round(render.WorkBreatheAmp))
 	if margin != wantMargin {
 		t.Fatalf("did not land on the combined peak: margin = %d, want %d (deterministic phase setup is broken, not just the invariant)", margin, wantMargin)
 	}
+	assertWeldedAndBounded(t, "background work at breathe peak", margin)
+}
+
+// The tightest point in the system: attention=needs plus the larger of the two
+// motions, the breathe, at its peak. By construction (tabOverflow ==
+// render.MaxProtrusion == AlertProtrusion + round(max(WobbleAmp,
+// WorkBreatheAmp))) the margin lands at exactly 0.
+func TestComputeRightMargin_NeedsAndBackgroundAtPeak_MarginExactlyZero(t *testing.T) {
+	s, now := peakSurface("waiting", "needs", 2)
+	margin := s.computeRightMargin(now)
+
 	if margin != 0 {
 		t.Errorf("margin = %d, want exactly 0 — this is the system's tightest margin; any deviation means either a gap or an overshoot", margin)
 	}
-	assertWeldedAndBounded(t, "needs+working at wobble peak", margin)
+	assertWeldedAndBounded(t, "needs+background at breathe peak", margin)
 }
 
 // The stateElapsed/elapsedChanged/haloPhaseStep decisions used to be tested
