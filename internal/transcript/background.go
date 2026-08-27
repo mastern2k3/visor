@@ -25,7 +25,14 @@ type BackgroundEvent struct {
 
 // startRe matches the tool_result text emitted when a command is launched in
 // the background. The id is alphanumeric (Claude uses a short "bkg…" token).
-var startRe = regexp.MustCompile(`Command running in background with ID: ([A-Za-z0-9]+)`)
+//
+// The "Output is being written to" clause is required, not decoration: without
+// it the phrase also matches itself *quoted* in ordinary text — a session that
+// greps a transcript, or writes about this feature, books a start whose finish
+// can never arrive, and the tab breathes forever. Every real launch in the
+// local corpus carries the clause; a wording change upstream would cost us
+// starts, which is the failure direction to notice here.
+var startRe = regexp.MustCompile(`Command running in background with ID: ([A-Za-z0-9]+)\. Output is being written to:`)
 
 // taskIDRe / statusRe extract all fields from <task-notification> finish blocks.
 var taskIDRe = regexp.MustCompile(`<task-id>([^<]+)</task-id>`)
@@ -59,27 +66,18 @@ func toolResultText(b Block) string {
 }
 
 // ScanBackground walks parsed lines (any order) and returns the background
-// lifecycle events found in user-line content. Both markers live inside
-// user-line content blocks, so we decode content the same way Classify does.
+// lifecycle events found in them.
 //
-// A <task-notification> can land on a user line, on a queue-operation line, or
-// on BOTH — and for some tasks only on the queue-operation line, so both are
-// inspected. Callers key events by TaskID into a set, so seeing the same finish
-// twice is a harmless no-op; missing it entirely is not, and leaves the task
-// looking like it is still running forever.
+// Starts live in user-line tool_result content, decoded the way Classify does.
+// Finishes are read off Line.Notif — the raw JSON of any line that mentions a
+// task-id — because a <task-notification> lands on a user line, a
+// queue-operation line, or an attachment line depending on how the session was
+// running, and each carrier missed leaks the task as permanently "running".
+// Lines built by hand rather than by ParseFile therefore report no finishes.
 func ScanBackground(lines []Line) []BackgroundEvent {
 	var out []BackgroundEvent
 	for _, ln := range lines {
-		// queue-operation lines carry the notification as a bare top-level
-		// string. This is the only place some finishes appear at all, so
-		// skipping them leaks the task as permanently "running".
-		if ln.Type == "queue-operation" {
-			var text string
-			if json.Unmarshal(ln.QueueContent, &text) == nil {
-				out = append(out, finishEvents(text)...)
-			}
-			continue
-		}
+		out = append(out, finishEvents(ln.Notif)...)
 		if ln.Type != "user" || ln.Message == nil {
 			continue
 		}
@@ -96,9 +94,7 @@ func ScanBackground(lines []Line) []BackgroundEvent {
 			}
 			if m := startRe.FindStringSubmatch(text); m != nil {
 				out = append(out, BackgroundEvent{TaskID: strings.TrimSpace(m[1]), Kind: BackgroundStart})
-				continue
 			}
-			out = append(out, finishEvents(text)...)
 		}
 	}
 	return out

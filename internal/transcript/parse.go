@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -10,6 +11,24 @@ import (
 // scannerBufMax must exceed the largest tool_result payload Claude persists.
 // ccdiag uses 10MB; tool results occasionally hit a few MB.
 const scannerBufMax = 10 * 1024 * 1024
+
+// notifTag marks a line as carrying a background task-notification. Only such
+// lines keep their raw JSON (Line.Notif) — copying every line's bytes would
+// mean holding a second copy of multi-MB tool results for nothing.
+// Assumes the writer does not HTML-escape `<` (Claude Code uses
+// JSON.stringify, which does not); a \u003c-escaping writer would hide it.
+var notifTag = []byte("<task-id>")
+
+func decodeLine(b []byte) (Line, bool) {
+	var ln Line
+	if err := json.Unmarshal(b, &ln); err != nil {
+		return ln, false
+	}
+	if bytes.Contains(b, notifTag) {
+		ln.Notif = string(b)
+	}
+	return ln, true
+}
 
 // ParseFile reads every line of a JSONL transcript. Malformed lines are
 // silently skipped (callers may want to log; for state classification we
@@ -32,8 +51,8 @@ func parseReader(r io.Reader) ([]Line, error) {
 		if len(b) == 0 {
 			continue
 		}
-		var ln Line
-		if err := json.Unmarshal(b, &ln); err != nil {
+		ln, ok := decodeLine(b)
+		if !ok {
 			continue
 		}
 		out = append(out, ln)
@@ -69,8 +88,8 @@ func ParseAppended(path string, offset int64) (lines []Line, newOffset int64, er
 		if len(b) == 0 {
 			continue
 		}
-		var ln Line
-		if err := json.Unmarshal(b, &ln); err != nil {
+		ln, ok := decodeLine(b)
+		if !ok {
 			continue
 		}
 		lines = append(lines, ln)

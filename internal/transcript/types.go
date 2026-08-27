@@ -23,14 +23,15 @@ type Line struct {
 
 	Message *MessageBody `json:"message"`
 
-	// QueueContent is the top-level `content` field, which queue-operation
-	// lines use to carry a bare string. Background task-notifications land
-	// there — and sometimes ONLY there, never on a user line — so
-	// ScanBackground has to read it or the finish marker is lost and the task
-	// looks like it is still running forever. RawMessage, not string: other
-	// line types may put a non-string here and a type mismatch would fail the
-	// whole line's decode.
-	QueueContent json.RawMessage `json:"content,omitempty"`
+	// Notif carries the line's raw JSON, but only for lines that contain a
+	// <task-notification> marker (set in parse.go). Those markers turn up on
+	// user lines, on queue-operation lines' bare top-level `content`, and on
+	// attachment lines' `attachment.prompt` — three carriers found so far, and
+	// every carrier missed leaks a background task as permanently "running",
+	// which the HUD shows as a tab animating with nothing running. So
+	// ScanBackground regex-scans the raw line instead of enumerating carriers:
+	// the markers are never JSON-escaped, so the carrier stops mattering.
+	Notif string `json:"-"`
 
 	// ai-title records (Claude auto-generated session label)
 	AiTitle string `json:"aiTitle,omitempty"`
