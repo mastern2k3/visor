@@ -6,11 +6,19 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"strings"
 )
 
 // scannerBufMax must exceed the largest tool_result payload Claude persists.
 // ccdiag uses 10MB; tool results occasionally hit a few MB.
 const scannerBufMax = 10 * 1024 * 1024
+
+// bgStartKey / bgStopMsg gate the second, targeted unmarshal that lifts the
+// background task ids out of `toolUseResult`. Cheap byte scans first because
+// re-parsing every line to reach one nested field would mean walking multi-MB
+// tool results for nothing.
+var bgStartKey = []byte(`"backgroundTaskId"`)
+var bgStopMsg = []byte("Successfully stopped task:")
 
 // notifTag marks a line as carrying a background task-notification. Only such
 // lines keep their raw JSON (Line.Notif) — copying every line's bytes would
@@ -26,6 +34,26 @@ func decodeLine(b []byte) (Line, bool) {
 	}
 	if bytes.Contains(b, notifTag) {
 		ln.Notif = string(b)
+	}
+	if bytes.Contains(b, bgStartKey) || bytes.Contains(b, bgStopMsg) {
+		// toolUseResult is polymorphic across tools (some write a bare
+		// string), so a decode failure here is expected and ignored — Bash
+		// results, the only ones that matter, are always objects.
+		var t struct {
+			R struct {
+				BackgroundTaskID string `json:"backgroundTaskId"`
+				TaskID           string `json:"task_id"`
+				Message          string `json:"message"`
+			} `json:"toolUseResult"`
+		}
+		if json.Unmarshal(b, &t) == nil {
+			ln.BgStartID = t.R.BackgroundTaskID
+			// task_id alone is not a stop: gate on the message so a future
+			// result that merely names a task cannot finish a running one.
+			if strings.HasPrefix(t.R.Message, "Successfully stopped task:") {
+				ln.BgStopID = t.R.TaskID
+			}
+		}
 	}
 	return ln, true
 }

@@ -29,24 +29,24 @@ func userLine(contentJSON string) Line {
 	return Line{Type: "user", Message: &MessageBody{Role: "user", Content: json.RawMessage(contentJSON)}}
 }
 
-func TestScanBackground_Start(t *testing.T) {
-	lines := []Line{userLine(`[{"type":"tool_result","content":"Command running in background with ID: bkgABC. Output is being written to: /tmp/x. You will be notified when it completes."}]`)}
-	got := ScanBackground(lines)
-	if len(got) != 1 {
-		t.Fatalf("got %d events, want 1: %+v", len(got), got)
-	}
-	if got[0].Kind != BackgroundStart || got[0].TaskID != "bkgABC" {
-		t.Errorf("got %+v, want Start bkgABC", got[0])
-	}
-}
-
-// The launch phrase quoted in ordinary text is not a launch. This happens for
-// real: a session that greps a transcript for the phrase lands its own grep
-// output in its own transcript, booking a start whose finish never comes.
 func TestScanBackground_QuotedLaunchPhraseIsNotAStart(t *testing.T) {
 	quoted := userJSONL(`[{"type":"tool_result","content":"Command running in background with ID: bo96ttzfi\nCommand running in background with ID: ba4wemrkv"}]`)
 	if got := ScanBackground(parseLines(t, quoted)); len(got) != 0 {
 		t.Errorf("ScanBackground = %+v, want no events for a quoted launch phrase", got)
+	}
+}
+
+// A task stopped with TaskStop must count as finished. It never receives a
+// <task-notification>, so its toolUseResult is the only finish marker there
+// is; missing it left every stopped task counted as running forever.
+func TestScanBackground_TaskStopFinishes(t *testing.T) {
+	line := `{"type":"user","toolUseResult":{"message":"Successfully stopped task: bxugk6q45 (python deploy.py)","task_id":"bxugk6q45","task_type":"local_bash"}}`
+	got := ScanBackground(parseLines(t, line))
+	if len(got) != 1 {
+		t.Fatalf("ScanBackground = %+v, want exactly 1 finish event", got)
+	}
+	if got[0].TaskID != "bxugk6q45" || got[0].Kind != BackgroundFinish || got[0].Failed {
+		t.Errorf("got %+v, want {bxugk6q45 BackgroundFinish false}", got[0])
 	}
 }
 
@@ -76,21 +76,6 @@ func TestScanBackground_IgnoresUnrelated(t *testing.T) {
 	}
 	if got := ScanBackground(lines); len(got) != 0 {
 		t.Errorf("got %d events, want 0: %+v", len(got), got)
-	}
-}
-
-// TestScanBackground_StartFromContentArray exercises Fix 1: the tool_result
-// whose `content` field is a JSON array of blocks (not a bare string).
-func TestScanBackground_StartFromContentArray(t *testing.T) {
-	// content is an array of blocks containing the launch message
-	inner := `[{"type":"text","text":"Command running in background with ID: bkgXYZ. Output is being written to: /tmp/out. You will be notified when it completes."}]`
-	content := `[{"type":"tool_result","tool_use_id":"tu1","content":` + inner + `}]`
-	got := ScanBackground([]Line{userLine(content)})
-	if len(got) != 1 {
-		t.Fatalf("got %d events, want 1: %+v", len(got), got)
-	}
-	if got[0].Kind != BackgroundStart || got[0].TaskID != "bkgXYZ" {
-		t.Errorf("got %+v, want Start bkgXYZ", got[0])
 	}
 }
 

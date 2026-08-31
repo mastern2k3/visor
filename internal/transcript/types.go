@@ -33,6 +33,17 @@ type Line struct {
 	// the markers are never JSON-escaped, so the carrier stops mattering.
 	Notif string `json:"-"`
 
+	// BgStartID / BgStopID are the background task ids lifted from the line's
+	// structured `toolUseResult` during parsing: `backgroundTaskId` for a
+	// launch, `task_id` on a "Successfully stopped task" result for a stop.
+	// Structured, not prose, because the launch *sentence* also shows up in
+	// ordinary text — a grep over a transcript, a doc about this feature — and
+	// reading that booked a start whose finish never came. The ids are copied
+	// out during parsing rather than keeping the raw `toolUseResult`, which
+	// would retain a second copy of every multi-MB tool result.
+	BgStartID string `json:"-"`
+	BgStopID  string `json:"-"`
+
 	// ai-title records (Claude auto-generated session label)
 	AiTitle string `json:"aiTitle,omitempty"`
 
