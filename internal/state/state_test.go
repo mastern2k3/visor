@@ -1,6 +1,8 @@
 package state
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -170,5 +172,41 @@ func TestApplyHook_NewSessionHasNonZeroStateSince(t *testing.T) {
 	}
 	if sess.StateSince.IsZero() {
 		t.Fatalf("session created via ApplyHook has zero StateSince")
+	}
+}
+
+// A session that dies without firing SessionEnd (crash, reboot, kill -9)
+// leaves no Ended tombstone. Restoring it at daemon startup put an idle tab
+// in the HUD for a session that ended months ago; transcript mtime is the
+// signal that it's long dead.
+func TestLoadPersisted_DropsStaleTranscripts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+
+	write := func(name string, age time.Duration) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mt := time.Now().Add(-age)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	if err := savePersisted([]persistedSession{
+		{ID: "fresh", TranscriptPath: write("fresh.jsonl", time.Hour)},
+		{ID: "stale", TranscriptPath: write("stale.jsonl", 72*time.Hour)},
+	}); err != nil {
+		t.Fatalf("savePersisted: %v", err)
+	}
+
+	sessions, _, err := LoadPersisted()
+	if err != nil {
+		t.Fatalf("LoadPersisted: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "fresh" {
+		t.Fatalf("got %+v, want only the fresh session", sessions)
 	}
 }

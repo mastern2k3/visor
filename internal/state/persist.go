@@ -53,6 +53,10 @@ type persistedState struct {
 	LegacyDismissed []string `json:"dismissed,omitempty"`
 }
 
+// staleMaxAge mirrors discovery's backfillMaxAge: past this, a transcript is
+// not something the HUD should show.
+const staleMaxAge = 24 * time.Hour
+
 func stateFile() string {
 	return filepath.Join(paths.StateDir(), "state.json")
 }
@@ -61,7 +65,12 @@ func stateFile() string {
 // and dismissed set ready for hydration into a new Store.
 //
 // Missing file → empty result, not an error. Sessions whose transcript
-// path no longer exists are dropped (avoid zombie entries in the HUD).
+// path no longer exists are dropped (avoid zombie entries in the HUD), as
+// are sessions whose transcript hasn't been touched in staleMaxAge — a
+// session that died without firing SessionEnd (crash, reboot, kill -9)
+// leaves no tombstone, and would otherwise be restored as an idle tab
+// forever. Same window discovery's backfill uses, so a dropped tombstone
+// can't be resurrected by the next walk either.
 func LoadPersisted() (sessions []persistedSession, dismissed map[string]bool, err error) {
 	dismissed = map[string]bool{}
 	b, err := os.ReadFile(stateFile())
@@ -88,8 +97,12 @@ func LoadPersisted() (sessions []persistedSession, dismissed map[string]bool, er
 			continue
 		}
 		if ps.TranscriptPath != "" {
-			if _, err := os.Stat(ps.TranscriptPath); err != nil {
+			fi, err := os.Stat(ps.TranscriptPath)
+			if err != nil {
 				continue // transcript deleted; drop the entry
+			}
+			if time.Since(fi.ModTime()) > staleMaxAge {
+				continue // long dead; drop rather than restore an idle tab
 			}
 		}
 		sessions = append(sessions, ps)
