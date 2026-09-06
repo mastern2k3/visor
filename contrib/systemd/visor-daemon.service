@@ -1,0 +1,11 @@
+[Unit]
+Description=Visor session daemon
+Documentation=https://github.com/nitzanz/visor
+
+[Service]
+ExecStart=%h/bin/visor daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

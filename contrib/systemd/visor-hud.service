@@ -1,0 +1,19 @@
+[Unit]
+Description=Visor attention HUD
+Documentation=https://github.com/nitzanz/visor
+Requires=visor-daemon.service
+After=visor-daemon.service
+
+# No [Install] section on purpose. The HUD must not start before the
+# compositor: the x11 backend latches its ARGB visual once, at window
+# creation, and can never re-derive it (see CLAUDE.md) — losing that race
+# degrades the whole session to squared corners on a black column. systemd
+# has no handle on picom here because the window manager starts it, so the
+# window manager starts the HUD too: `systemctl --user start visor-hud` from
+# the WM's own autostart, after the compositor line. DISPLAY/XAUTHORITY come
+# from the systemd user environment, which the display manager populates at
+# login.
+[Service]
+ExecStart=%h/bin/visor hud open
+Restart=on-failure
+RestartSec=2

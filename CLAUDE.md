@@ -45,6 +45,8 @@ go build -o bin/visor ./cmd/visor
 ./bin/visor ctl classify <path>.jsonl
 ```
 
+**Autostart.** `contrib/systemd/` holds two user units (symlink into `~/.config/systemd/user/`, both expect the binary at `~/bin/visor`). `visor-daemon.service` is `WantedBy=default.target` — it needs no display, and starting it at login means `SessionEnd` hooks aren't silently dropped while it's down (a dropped one loses the session's tombstone permanently). `visor-hud.service` has **no `[Install]` section on purpose**: it must start after the compositor, because the x11 backend latches its ARGB visual at window creation and can never re-derive it. systemd has no ordering handle on picom when the WM launches it, so the WM starts the HUD too — `systemctl --user start visor-hud.service` as the last line of the WM's autostart (here, the LeftWM theme's `up` script, which boots picom at the top). Check `argb=true` in `journalctl --user -u visor-hud` after a fresh login; `argb=false` means the race was lost.
+
 The daemon listens on `$VISOR_SOCK` or `$XDG_RUNTIME_DIR/visor.sock`. Reads transcripts from `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. State recovery file lives under `$XDG_STATE_HOME/visor` or `~/.local/state/visor`.
 
 ## Architecture in one breath
