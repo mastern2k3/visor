@@ -18,6 +18,12 @@ const scannerBufMax = 10 * 1024 * 1024
 // re-parsing every line to reach one nested field would mean walking multi-MB
 // tool results for nothing.
 var bgStartKey = []byte(`"backgroundTaskId"`)
+
+// bgMonitorKey gates the Monitor tool's own start shape, which reports
+// `taskId` + `timeoutMs` rather than `backgroundTaskId`. Gate on timeoutMs,
+// not taskId: other tools write a bare `taskId` in results that are nothing to
+// do with a background launch.
+var bgMonitorKey = []byte(`"timeoutMs"`)
 var bgStopMsg = []byte("Successfully stopped task:")
 
 // notifTag marks a line as carrying a background task-notification. Only such
@@ -35,19 +41,24 @@ func decodeLine(b []byte) (Line, bool) {
 	if bytes.Contains(b, notifTag) {
 		ln.Notif = string(b)
 	}
-	if bytes.Contains(b, bgStartKey) || bytes.Contains(b, bgStopMsg) {
+	if bytes.Contains(b, bgStartKey) || bytes.Contains(b, bgMonitorKey) || bytes.Contains(b, bgStopMsg) {
 		// toolUseResult is polymorphic across tools (some write a bare
 		// string), so a decode failure here is expected and ignored — Bash
 		// results, the only ones that matter, are always objects.
 		var t struct {
 			R struct {
 				BackgroundTaskID string `json:"backgroundTaskId"`
+				MonitorTaskID    string `json:"taskId"`
+				TimeoutMS        int64  `json:"timeoutMs"`
 				TaskID           string `json:"task_id"`
 				Message          string `json:"message"`
 			} `json:"toolUseResult"`
 		}
 		if json.Unmarshal(b, &t) == nil {
 			ln.BgStartID = t.R.BackgroundTaskID
+			if ln.BgStartID == "" && t.R.TimeoutMS > 0 {
+				ln.BgStartID = t.R.MonitorTaskID
+			}
 			// task_id alone is not a stop: gate on the message so a future
 			// result that merely names a task cannot finish a running one.
 			if strings.HasPrefix(t.R.Message, "Successfully stopped task:") {

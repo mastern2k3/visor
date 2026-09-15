@@ -31,7 +31,8 @@ var statusRe = regexp.MustCompile(`<status>([^<]+)</status>`)
 // carry none of this — every field it reads is lifted during parsing.
 //
 // Starts and stops come from the line's structured `toolUseResult`
-// (Line.BgStartID / Line.BgStopID), never from prose. The launch sentence used
+// (Line.BgStartID / Line.BgStopID), never from prose. A Bash launch reports
+// `backgroundTaskId`; a Monitor reports `taskId` + `timeoutMs` instead. The launch sentence used
 // to be regexed out of tool_result text, which meant any session that merely
 // *quoted* the sentence — a grep over a transcript, a doc about this feature —
 // booked a start whose finish could never arrive, and its tab breathed forever.
@@ -56,23 +57,30 @@ func ScanBackground(lines []Line) []BackgroundEvent {
 }
 
 // finishEvents extracts every <task-notification> finish marker in text. A
-// single blob can hold more than one, and the status decides Failed.
+// single blob can hold more than one, so each block is read on its own rather
+// than pairing the Nth id with the Nth status across the whole blob — those
+// lists can differ in length, and then every pairing after the gap is wrong.
+//
+// **A block without a <status> is not a finish.** A Monitor reports each event
+// it sees as a task-notification carrying only <summary>/<event>, and ends with
+// a status-bearing one; treating the progress notices as finishes would close
+// the monitor on its very first event and stop the tab breathing while it is
+// still watching.
 func finishEvents(text string) []BackgroundEvent {
-	ids := taskIDRe.FindAllStringSubmatch(text, -1)
-	if ids == nil {
-		return nil
-	}
-	statuses := statusRe.FindAllStringSubmatch(text, -1)
-	out := make([]BackgroundEvent, 0, len(ids))
-	for i, id := range ids {
-		failed := true
-		if i < len(statuses) && strings.TrimSpace(statuses[i][1]) == "completed" {
-			failed = false
+	var out []BackgroundEvent
+	for _, blk := range strings.Split(text, "<task-notification>")[1:] {
+		if j := strings.Index(blk, "</task-notification>"); j >= 0 {
+			blk = blk[:j]
+		}
+		id := taskIDRe.FindStringSubmatch(blk)
+		status := statusRe.FindStringSubmatch(blk)
+		if id == nil || status == nil {
+			continue
 		}
 		out = append(out, BackgroundEvent{
 			TaskID: strings.TrimSpace(id[1]),
 			Kind:   BackgroundFinish,
-			Failed: failed,
+			Failed: strings.TrimSpace(status[1]) != "completed",
 		})
 	}
 	return out

@@ -148,3 +148,58 @@ func TestScanBackground_NoMarkerNoEvents(t *testing.T) {
 		t.Errorf("ScanBackground = %+v, want no events", got)
 	}
 }
+
+// A Monitor is background work too, but reports its launch as `taskId` +
+// `timeoutMs` rather than `backgroundTaskId` — so a session with a monitor
+// open showed no background work at all.
+func TestScanBackground_MonitorStart(t *testing.T) {
+	line := `{"type":"user","toolUseResult":{"taskId":"b2z0e7oia","timeoutMs":1800000,"persistent":false}}`
+	got := ScanBackground(parseLines(t, line))
+	if len(got) != 1 || got[0].Kind != BackgroundStart || got[0].TaskID != "b2z0e7oia" {
+		t.Fatalf("got %+v, want Start b2z0e7oia", got)
+	}
+}
+
+// A bare `taskId` with no timeoutMs is some other tool's result, not a launch.
+func TestScanBackground_TaskIDWithoutTimeoutIsNotAStart(t *testing.T) {
+	line := `{"type":"user","toolUseResult":{"taskId":"t123","success":true,"statusChange":"done"}}`
+	if got := ScanBackground(parseLines(t, line)); len(got) != 0 {
+		t.Errorf("ScanBackground = %+v, want no events", got)
+	}
+}
+
+// A Monitor reports every event it sees as a task-notification with no
+// <status>. Those are progress, not completion: treating one as a finish
+// stopped the tab breathing on the monitor's first event, while it watched on.
+func TestScanBackground_MonitorEventIsNotAFinish(t *testing.T) {
+	notif := `<task-notification>\n<task-id>b2z0e7oia</task-id>\n<summary>Monitor event: job status</summary>\n<event>19:23:32 INTAKE_PREPROCESSING</event>\n</task-notification>`
+	line := `{"type":"queue-operation","content":"` + notif + `"}`
+	if got := ScanBackground(parseLines(t, line)); len(got) != 0 {
+		t.Errorf("ScanBackground = %+v, want no events for a status-less notification", got)
+	}
+}
+
+// …and the terminal notification, which does carry a status, finishes it.
+func TestScanBackground_MonitorTerminalStatusFinishes(t *testing.T) {
+	notif := `<task-notification>\n<task-id>b2z0e7oia</task-id>\n<status>completed</status>\n</task-notification>`
+	line := `{"type":"queue-operation","content":"` + notif + `"}`
+	got := ScanBackground(parseLines(t, line))
+	if len(got) != 1 || got[0].Kind != BackgroundFinish || got[0].Failed {
+		t.Fatalf("got %+v, want a clean finish", got)
+	}
+}
+
+// Blocks are read one at a time, so a status-less block in the middle cannot
+// shift every later id onto the wrong status.
+func TestScanBackground_MixedBlocksDoNotMisalignStatuses(t *testing.T) {
+	text := `<task-notification>\n<task-id>bEvent</task-id>\n<summary>Monitor event</summary>\n</task-notification>\n` +
+		`<task-notification>\n<task-id>bDone</task-id>\n<status>completed</status>\n</task-notification>`
+	line := `{"type":"queue-operation","content":"` + text + `"}`
+	got := ScanBackground(parseLines(t, line))
+	if len(got) != 1 {
+		t.Fatalf("got %+v, want exactly 1 finish", got)
+	}
+	if got[0].TaskID != "bDone" || got[0].Failed {
+		t.Errorf("got %+v, want bDone completed — the status belongs to the block it sits in", got[0])
+	}
+}
