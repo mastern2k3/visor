@@ -2,18 +2,36 @@
 Description=Visor attention HUD
 Documentation=https://github.com/nitzanz/visor
 Requires=visor-daemon.service
-After=visor-daemon.service
+After=visor-daemon.service graphical-session.target
+PartOf=graphical-session.target
 
-# No [Install] section on purpose. The HUD must not start before the
-# compositor: the x11 backend latches its ARGB visual once, at window
-# creation, and can never re-derive it (see CLAUDE.md) — losing that race
-# degrades the whole session to squared corners on a black column. systemd
-# has no handle on picom here because the window manager starts it, so the
-# window manager starts the HUD too: `systemctl --user start visor-hud` from
-# the WM's own autostart, after the compositor line. DISPLAY/XAUTHORITY come
-# from the systemd user environment, which the display manager populates at
-# login.
+# Whether this unit autostarts is a per-machine decision, and `systemctl --user
+# enable` is what makes it — the enable symlink lands in
+# ~/.config/systemd/user/graphical-session.target.wants/ and is not part of this
+# repo, so one unit file serves both kinds of session:
+#
+#   wayland (niri/sway/…): `systemctl --user enable --now visor-hud.service`.
+#     The compositor *is* the session, so it is already up when
+#     graphical-session.target is reached and the wlr backend has nothing to
+#     race.
+#
+#   x11 (leftwm + picom): leave it DISABLED and keep starting it from the WM —
+#     `systemctl --user start visor-hud.service` as the last line of the theme's
+#     `up` script, after the picom line. The x11 backend latches its ARGB visual
+#     once, at window creation, and can never re-derive it (see CLAUDE.md);
+#     systemd has no ordering handle on a picom that the WM launched, so only
+#     the WM can sequence the two. `start` works fine on a disabled unit —
+#     enablement controls autostart and nothing else.
+#
+# PartOf/After are inert for a manual start on a session that never reaches
+# graphical-session.target, and shut the HUD down with the session on one that
+# does. DISPLAY/WAYLAND_DISPLAY come from the systemd user environment, which
+# the display manager or compositor session populates at login; the HUD's
+# backend auto-detect keys off WAYLAND_DISPLAY.
 [Service]
 ExecStart=%h/bin/visor hud open
 Restart=on-failure
 RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
