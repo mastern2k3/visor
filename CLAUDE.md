@@ -13,7 +13,10 @@ Test coverage is uneven by design, not oversight. Seven packages have tests: `co
 ## Build & run
 
 ```
-go build -o bin/visor ./cmd/visor
+just build              # CGO_ENABLED=0 go build -o bin/visor ./cmd/visor
+just install            # ...and copy it to ~/bin/visor, where the systemd units expect it
+just test
+
 
 # install hook wrapper + print settings.json snippet for ~/.claude/settings.json
 ./bin/visor install
@@ -44,6 +47,8 @@ go build -o bin/visor ./cmd/visor
 # debug helper: classify a transcript without the daemon
 ./bin/visor ctl classify <path>.jsonl
 ```
+
+**`CGO_ENABLED=0` is not optional on NixOS.** A dynamically-linked build records an absolute `/nix/store/...-glibc-X/lib/ld-linux-x86-64.so.2` interpreter path; the next system update GCs that store path and the binary dies with `cannot execute: required file not found` — nothing in the Go source changed. `just build` sets it; a bare `go build` does not (CGO defaults to *on* when a C toolchain is present).
 
 **Autostart.** `contrib/systemd/` holds two user units (symlink into `~/.config/systemd/user/`, both expect the binary at `~/bin/visor`). `visor-daemon.service` is `WantedBy=default.target` — it needs no display, and starting it at login means `SessionEnd` hooks aren't silently dropped while it's down (a dropped one loses the session's tombstone permanently). `visor-hud.service` has **no `[Install]` section on purpose**: it must start after the compositor, because the x11 backend latches its ARGB visual at window creation and can never re-derive it. systemd has no ordering handle on picom when the WM launches it, so the WM starts the HUD too — `systemctl --user start visor-hud.service` as the last line of the WM's autostart (here, the LeftWM theme's `up` script, which boots picom at the top). Check `argb=true` in `journalctl --user -u visor-hud` after a fresh login; `argb=false` means the race was lost.
 
