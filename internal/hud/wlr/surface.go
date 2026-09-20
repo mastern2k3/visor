@@ -88,6 +88,16 @@ type layerSurface struct {
 	// Only touched on the Wayland dispatch goroutine.
 	dirty bool
 
+	// configured is false until the compositor has sent the initial configure
+	// for this layer surface and we have acked it. Attaching a buffer before
+	// that is a protocol error ("must ack the initial configure before
+	// attaching buffer") that kills the whole connection, and it is easy to
+	// hit: applySnapshot creates surfaces and then the same run() iteration
+	// falls through to the animation tick, which can repaint them before
+	// Dispatch() has delivered a single configure. Only touched on the Wayland
+	// dispatch goroutine.
+	configured bool
+
 	// d is a back-pointer to the dock, needed so the pool's onRelease callback
 	// can call repaint without an extra closure argument.
 	d *dock
@@ -178,6 +188,7 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 	ls.SetListener(protocol.LayerSurfaceV1Listener{
 		Configure: func(_ any, _ protocol.LayerSurfaceV1, serial uint32, w uint32, h uint32) error {
 			ps.ls.AckConfigure(serial)
+			ps.configured = true
 			d.log.Debug("layer surface configure",
 				"session", ps.sessionID,
 				"want_w", render.BufW,
@@ -222,6 +233,13 @@ func newLayerSurface(d *dock, slot int, id, activity, attention string, st rende
 // both buffers are still in-flight; we mark dirty=true so the next
 // wl_buffer.release event retries via pool.onRelease.
 func (s *layerSurface) repaint(d *dock) {
+	if !s.configured {
+		// Pre-configure: record the intent and let the Configure handler paint
+		// the first frame. No buffer has ever been attached, so the
+		// release-driven retry can't fire here.
+		s.dirty = true
+		return
+	}
 	buf := s.pool.Acquire()
 	if buf == nil {
 		s.dirty = true
