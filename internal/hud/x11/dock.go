@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/BurntSushi/freetype-go/freetype/truetype"
+	"github.com/jezek/xgb/randr"
 	"github.com/jezek/xgb/xproto"
 	"github.com/jezek/xgbutil"
 	"github.com/jezek/xgbutil/xevent"
@@ -66,6 +68,13 @@ type dock struct {
 	// internal/hud/browse and catch.go.
 	tracker *browse.Tracker
 	catches map[string]*catchWindow
+
+	// screenDirty is set by the RandR hook when the monitor layout changes
+	// and consumed by the next animation tick, which re-measures and moves
+	// every tab (relayout). lastSnap is what relayout re-applies to put the
+	// session rows back at their slots on the new monitor.
+	screenDirty atomic.Bool
+	lastSnap    []sessionView
 }
 
 func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
@@ -126,7 +135,59 @@ func newDock(cfg config.Config, pinConfig bool) (*dock, error) {
 
 	d.log.Info("X connected", "mon_x", mon.x, "mon_y", mon.y, "mon_w", mon.w,
 		"mon_h", mon.h, "argb", d.argb)
+	d.watchScreen()
 	return d, nil
+}
+
+// watchScreen subscribes to RandR screen/CRTC changes (docking, xrandr,
+// autorandr) so the dock follows the monitor instead of staying pinned to
+// the edge it measured at startup — tabs placed against a 3456px-wide laptop
+// panel are simply off-screen on a 2560px external one.
+//
+// The hook only sets a flag: re-measuring needs a checked Xinerama query,
+// and a checked request from inside an xevent callback deadlocks the dock
+// (see CLAUDE.md). The animation tick does the actual work, which also
+// coalesces the burst of CRTC events one layout change produces.
+func (d *dock) watchScreen() {
+	if err := randr.Init(d.X.Conn()); err != nil {
+		d.log.Warn("no RandR; dock will not follow monitor changes", "err", err)
+		return
+	}
+	randr.SelectInput(d.X.Conn(), d.X.RootWin(),
+		randr.NotifyMaskScreenChange|randr.NotifyMaskCrtcChange)
+	xevent.HookFun(func(_ *xgbutil.XUtil, ev interface{}) bool {
+		switch ev.(type) {
+		case randr.ScreenChangeNotifyEvent, randr.NotifyEvent:
+			d.screenDirty.Store(true)
+			return false // xgbutil has no dispatch for these; stop it logging them
+		}
+		return true
+	}).Connect(d.X)
+}
+
+// relayout re-measures the monitor and moves every window onto it. Open
+// panels are collapsed and the help window closed first: both were placed
+// against the old geometry and the cursor is no longer where they expect.
+func (d *dock) relayout() {
+	mon, err := primaryMonitor(d.X)
+	if err != nil || mon == d.mon {
+		return
+	}
+	d.log.Info("monitor changed", "mon_x", mon.x, "mon_y", mon.y, "mon_w", mon.w, "mon_h", mon.h)
+	d.applyBrowse(d.tracker.Exit())
+	if d.helpW != nil {
+		d.helpW.close()
+		d.helpW = nil
+	}
+	d.mon = mon
+	d.tracker.SetColumn(mon.x+mon.w-bufW, mon.x+mon.w)
+	for _, t := range d.tabs {
+		t.setEdge(mon.x+mon.w, t.opt.y) // applySnapshot moves y if mon.y changed
+	}
+	if d.helpT != nil {
+		d.helpT.setEdge(mon.x+mon.w, mon.y+dockTopMargin)
+	}
+	d.applySnapshot(d.lastSnap)
 }
 
 func (d *dock) close() {
@@ -214,6 +275,9 @@ func (d *dock) run() error {
 // calling all three for every tab on every ~30Hz frame costs nothing for the
 // common case of a collapsed, non-permission tab.
 func (d *dock) animate(now time.Time) {
+	if d.screenDirty.Swap(false) {
+		d.relayout()
+	}
 	// Nothing browse-related is deferred to this tick. Every crossing this
 	// backend sees carries root coordinates, so both row swaps and the exit are
 	// decided in the event handlers the instant they arrive — see applyBrowse,
@@ -484,6 +548,7 @@ const (
 // re-arms attention.
 func (d *dock) applySnapshot(snap []sessionView) {
 	const topMargin = dockTopMargin
+	d.lastSnap = snap
 
 	visible := snap[:0:0]
 	for _, s := range snap {

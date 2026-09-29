@@ -159,6 +159,21 @@ func (t *tab) update(s sessionView, y int) {
 	t.render(time.Now())
 }
 
+// setEdge re-anchors the tab to a new screen edge and row, for when the
+// monitor layout changes under a running dock. The window is reused and just
+// moved; the next tick resumes motion from the new rest position.
+func (t *tab) setEdge(rightX, y int) {
+	t.hideTooltip() // positioned against the old edge
+	t.opt.rightX = rightX
+	t.opt.y = y
+	if t.opt.expanded {
+		t.opt.x = expandedX(rightX)
+	} else {
+		t.opt.x = t.restX()
+	}
+	t.win.Move(t.opt.x, t.opt.y)
+}
+
 // x returns the X coordinate of the right-anchored tab.
 func (t *tab) x() int {
 	// Cached on the window — we don't refetch screen geometry every update.
